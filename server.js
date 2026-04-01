@@ -203,7 +203,6 @@ async function startServer() {
       console.log(`📊 المنطقة الزمنية: UTC+${config.system.timezone}`);
       console.log('═══════════════════════════════════════════════════════');
     });
-    });
     
     // إحصائيات دورية (كل 5 دقائق)
     setInterval(() => {
