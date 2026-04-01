@@ -163,7 +163,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-const PORT = process.env.API_PORT || 5088;
+const PORT = process.env._PORT || 5088;
 server.listen(PORT, () => {
   console.log(`Dashboard API running on port ${PORT}`);
 });
