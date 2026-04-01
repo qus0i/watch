@@ -1,7 +1,7 @@
 /**
  * ═══════════════════════════════════════════════════════════════
  *  GPS Watch TCP Server مع القياسات الصحية الدورية
- *  يرسل أوامر القياس تلقائياً كل 5 دقائق
+ *  يرسل أمر قياس واحد شامل كل 5 دقائق
  * ═══════════════════════════════════════════════════════════════
  */
 
@@ -17,15 +17,10 @@ const ProtocolBuilder = require('./protocol/builder');
 // ⭐ إعدادات القياسات الصحية الدورية
 // ═══════════════════════════════════════════════════════════════
 const HEALTH_MONITORING_CONFIG = {
-  enabled: true,                    // true = مفعل | false = معطل
-  intervalMinutes: 5,               // كل كم دقيقة (5 = كل 5 دقائق)
-  measurements: {
-    heartRate: true,                // قياس النبض
-    bloodPressure: true,            // قياس الضغط
-    temperature: true,              // قياس الحرارة
-    bloodOxygen: true,              // قياس الأكسجين
-  },
-  delayBetweenCommands: 2000,      // تأخير بين كل أمر (2000 = 2 ثانية)
+  enabled: true,
+  intervalMinutes: 5,
+  measurementType: 'bloodPressure',  // 'bloodPressure' يرجع النبض والضغط مع بعض
+  // خيارات أخرى: 'heartRate', 'temperature', 'bloodOxygen'
 };
 
 // تخزين الاتصالات النشطة
@@ -145,7 +140,7 @@ async function sendHealthMeasurementCommands() {
     logger.info(`\n🩺 بدء إرسال أوامر القياس لـ ${connectedDevices.length} جهاز`);
 
     for (const device of connectedDevices) {
-      await sendMeasurementCommandsToDevice(device.imei, device.socket);
+      await sendMeasurementCommandToDevice(device.imei, device.socket);
       await delay(1000);
     }
 
@@ -157,44 +152,44 @@ async function sendHealthMeasurementCommands() {
 }
 
 /**
- * إرسال أوامر القياس لجهاز واحد
+ * إرسال أمر قياس واحد لجهاز
  */
-async function sendMeasurementCommandsToDevice(imei, socket) {
+async function sendMeasurementCommandToDevice(imei, socket) {
   try {
-    const config = HEALTH_MONITORING_CONFIG;
-    const delayMs = config.delayBetweenCommands;
+    const measurementType = HEALTH_MONITORING_CONFIG.measurementType;
+    let cmd;
+    let measurementName;
 
-    logger.debug(`📤 إرسال أوامر القياس لـ ${imei}`);
-
-    if (config.measurements.heartRate) {
-      const cmd = ProtocolBuilder.buildHeartRateTestCommand(imei);
-      socket.write(cmd);
-      logger.debug(`   ❤️  النبض: ${cmd}`);
-      await delay(delayMs);
+    // اختيار نوع القياس
+    switch (measurementType) {
+      case 'heartRate':
+        cmd = ProtocolBuilder.buildHeartRateTestCommand(imei);
+        measurementName = 'النبض';
+        break;
+      
+      case 'bloodPressure':
+        cmd = ProtocolBuilder.buildBloodPressureTestCommand(imei);
+        measurementName = 'الضغط والنبض';
+        break;
+      
+      case 'temperature':
+        cmd = ProtocolBuilder.buildTemperatureTestCommand(imei);
+        measurementName = 'الحرارة';
+        break;
+      
+      case 'bloodOxygen':
+        cmd = ProtocolBuilder.buildOxygenTestCommand(imei);
+        measurementName = 'الأكسجين';
+        break;
+      
+      default:
+        cmd = ProtocolBuilder.buildBloodPressureTestCommand(imei);
+        measurementName = 'الضغط والنبض';
     }
 
-    if (config.measurements.bloodPressure) {
-      const cmd = ProtocolBuilder.buildBloodPressureTestCommand(imei);
-      socket.write(cmd);
-      logger.debug(`   💉 الضغط: ${cmd}`);
-      await delay(delayMs);
-    }
-
-    if (config.measurements.temperature) {
-      const cmd = ProtocolBuilder.buildTemperatureTestCommand(imei);
-      socket.write(cmd);
-      logger.debug(`   🌡️  الحرارة: ${cmd}`);
-      await delay(delayMs);
-    }
-
-    if (config.measurements.bloodOxygen) {
-      const cmd = ProtocolBuilder.buildOxygenTestCommand(imei);
-      socket.write(cmd);
-      logger.debug(`   🫁 الأكسجين: ${cmd}`);
-      await delay(delayMs);
-    }
-
-    logger.info(`✓ تم إرسال أوامر القياس لـ ${imei}`);
+    logger.debug(`📤 إرسال أمر ${measurementName} لـ ${imei}`);
+    socket.write(cmd);
+    logger.info(`✓ تم إرسال أمر ${measurementName} لـ ${imei}`);
 
   } catch (err) {
     logger.error(`خطأ في إرسال الأوامر لـ ${imei}:`, err.message);
@@ -284,12 +279,15 @@ async function startServer() {
       // ⭐ بدء نظام القياسات الدورية
       if (HEALTH_MONITORING_CONFIG.enabled) {
         const intervalMs = HEALTH_MONITORING_CONFIG.intervalMinutes * 60 * 1000;
+        const measurementNames = {
+          heartRate: 'النبض',
+          bloodPressure: 'الضغط والنبض',
+          temperature: 'الحرارة',
+          bloodOxygen: 'الأكسجين'
+        };
         
         logger.info(`\n🩺 تفعيل القياسات الدورية (كل ${HEALTH_MONITORING_CONFIG.intervalMinutes} دقيقة)`);
-        logger.info(`   ❤️  النبض: ${HEALTH_MONITORING_CONFIG.measurements.heartRate ? 'مفعل' : 'معطل'}`);
-        logger.info(`   💉 الضغط: ${HEALTH_MONITORING_CONFIG.measurements.bloodPressure ? 'مفعل' : 'معطل'}`);
-        logger.info(`   🌡️  الحرارة: ${HEALTH_MONITORING_CONFIG.measurements.temperature ? 'مفعل' : 'معطل'}`);
-        logger.info(`   🫁 الأكسجين: ${HEALTH_MONITORING_CONFIG.measurements.bloodOxygen ? 'مفعل' : 'معطل'}\n`);
+        logger.info(`   📊 نوع القياس: ${measurementNames[HEALTH_MONITORING_CONFIG.measurementType]}\n`);
         
         // تشغيل فوري بعد 5 ثواني
         setTimeout(() => sendHealthMeasurementCommands(), 5000);
