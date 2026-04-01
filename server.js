@@ -1,7 +1,7 @@
 /**
  * ═══════════════════════════════════════════════════════════════
- *  GPS Watch TCP Server
- *  سيرفر TCP لاستقبال بيانات ساعات GPS الذكية
+ *  GPS Watch TCP Server مع القياسات الصحية الدورية
+ *  يرسل أوامر القياس تلقائياً كل 5 دقائق
  * ═══════════════════════════════════════════════════════════════
  */
 
@@ -11,11 +11,22 @@ const logger = require('./utils/logger');
 const db = require('./database/db');
 const ProtocolParser = require('./protocol/parser');
 const MessageHandlers = require('./handlers/messageHandlers');
+const ProtocolBuilder = require('./protocol/builder');
 
-// Debug: تأكيد بدء التشغيل
-console.log('🚀 بدء تشغيل server.js...');
-console.log('📍 Node Version:', process.version);
-console.log('📍 Environment:', process.env.NODE_ENV || 'development');
+// ═══════════════════════════════════════════════════════════════
+// ⭐ إعدادات القياسات الصحية الدورية
+// ═══════════════════════════════════════════════════════════════
+const HEALTH_MONITORING_CONFIG = {
+  enabled: true,                    // true = مفعل | false = معطل
+  intervalMinutes: 5,               // كل كم دقيقة (5 = كل 5 دقائق)
+  measurements: {
+    heartRate: true,                // قياس النبض
+    bloodPressure: true,            // قياس الضغط
+    temperature: true,              // قياس الحرارة
+    bloodOxygen: true,              // قياس الأكسجين
+  },
+  delayBetweenCommands: 2000,      // تأخير بين كل أمر (2000 = 2 ثانية)
+};
 
 // تخزين الاتصالات النشطة
 const activeSockets = new Map();
@@ -28,19 +39,15 @@ const server = net.createServer((socket) => {
   
   logger.info(`🔌 اتصال جديد من: ${clientId}`);
   
-  // إضافة الاتصال للقائمة النشطة
   activeSockets.set(clientId, socket);
   
-  // معلومات الاتصال
   socket.clientId = clientId;
-  socket.imei = null; // سيتم تحديده عند تسجيل الدخول
+  socket.imei = null;
   socket.connectedAt = new Date();
   
-  // إعدادات الاتصال
   socket.setKeepAlive(true, config.server.keepAliveInterval);
-  socket.setTimeout(180000); // 3 دقائق timeout
+  socket.setTimeout(180000);
   
-  // Buffer للرسائل غير المكتملة
   let messageBuffer = '';
 
   /**
@@ -48,28 +55,23 @@ const server = net.createServer((socket) => {
    */
   socket.on('data', async (data) => {
     try {
-      // تحويل البيانات إلى نص
       const rawData = data.toString();
       messageBuffer += rawData;
       
       logger.debug(`📥 بيانات واردة من ${clientId}: ${rawData.substring(0, 100)}...`);
       
-      // معالجة الرسائل المكتملة (المنتهية بـ #)
       while (messageBuffer.includes('#')) {
         const endIndex = messageBuffer.indexOf('#');
         const message = messageBuffer.substring(0, endIndex + 1);
         messageBuffer = messageBuffer.substring(endIndex + 1);
         
-        // تحليل الرسالة
         const parsedData = ProtocolParser.parse(message);
         
         if (parsedData) {
-          // معالجة الرسالة
           await MessageHandlers.route(parsedData, socket);
         }
       }
       
-      // تنظيف الـ buffer إذا كبر كثير
       if (messageBuffer.length > 10000) {
         logger.warn(`⚠️ Buffer كبير جداً، سيتم تنظيفه`);
         messageBuffer = '';
@@ -109,15 +111,107 @@ const server = net.createServer((socket) => {
   socket.on('close', (hadError) => {
     if (hadError) {
       logger.warn(`⚠️ إغلاق الاتصال مع خطأ: ${clientId}`);
-    } else {
-      logger.debug(`✓ إغلاق اتصال نظيف: ${clientId}`);
     }
     activeSockets.delete(clientId);
   });
 });
 
 /**
+ * ═══════════════════════════════════════════════════════════════
+ * دوال القياسات الصحية الدورية
+ * ═══════════════════════════════════════════════════════════════
+ */
+
+/**
+ * دالة إرسال أوامر القياس لجميع الأجهزة المتصلة
+ */
+async function sendHealthMeasurementCommands() {
+  try {
+    const connectedDevices = [];
+    for (const [clientId, socket] of activeSockets.entries()) {
+      if (socket.imei) {
+        connectedDevices.push({
+          imei: socket.imei,
+          socket: socket
+        });
+      }
+    }
+
+    if (connectedDevices.length === 0) {
+      logger.debug('لا توجد أجهزة متصلة للقياس');
+      return;
+    }
+
+    logger.info(`\n🩺 بدء إرسال أوامر القياس لـ ${connectedDevices.length} جهاز`);
+
+    for (const device of connectedDevices) {
+      await sendMeasurementCommandsToDevice(device.imei, device.socket);
+      await delay(1000);
+    }
+
+    logger.info('✅ اكتملت جولة القياسات\n');
+
+  } catch (err) {
+    logger.error('خطأ في إرسال أوامر القياس:', err.message);
+  }
+}
+
+/**
+ * إرسال أوامر القياس لجهاز واحد
+ */
+async function sendMeasurementCommandsToDevice(imei, socket) {
+  try {
+    const config = HEALTH_MONITORING_CONFIG;
+    const delayMs = config.delayBetweenCommands;
+
+    logger.debug(`📤 إرسال أوامر القياس لـ ${imei}`);
+
+    if (config.measurements.heartRate) {
+      const cmd = ProtocolBuilder.buildHeartRateTestCommand(imei);
+      socket.write(cmd);
+      logger.debug(`   ❤️  النبض: ${cmd}`);
+      await delay(delayMs);
+    }
+
+    if (config.measurements.bloodPressure) {
+      const cmd = ProtocolBuilder.buildBloodPressureTestCommand(imei);
+      socket.write(cmd);
+      logger.debug(`   💉 الضغط: ${cmd}`);
+      await delay(delayMs);
+    }
+
+    if (config.measurements.temperature) {
+      const cmd = ProtocolBuilder.buildTemperatureTestCommand(imei);
+      socket.write(cmd);
+      logger.debug(`   🌡️  الحرارة: ${cmd}`);
+      await delay(delayMs);
+    }
+
+    if (config.measurements.bloodOxygen) {
+      const cmd = ProtocolBuilder.buildOxygenTestCommand(imei);
+      socket.write(cmd);
+      logger.debug(`   🫁 الأكسجين: ${cmd}`);
+      await delay(delayMs);
+    }
+
+    logger.info(`✓ تم إرسال أوامر القياس لـ ${imei}`);
+
+  } catch (err) {
+    logger.error(`خطأ في إرسال الأوامر لـ ${imei}:`, err.message);
+  }
+}
+
+/**
+ * دالة مساعدة للتأخير
+ */
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════
  * معالجة أخطاء السيرفر
+ * ═══════════════════════════════════════════════════════════════
  */
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
@@ -130,11 +224,8 @@ server.on('error', (err) => {
 
 /**
  * دالة لإرسال أمر لجهاز معين
- * @param {string} imei - رقم IMEI
- * @param {string} command - الأمر المُراد إرساله
  */
 function sendCommandToDevice(imei, command) {
-  // البحث عن الـ socket بناءً على IMEI
   for (const [clientId, socket] of activeSockets.entries()) {
     if (socket.imei === imei) {
       logger.info(`📤 إرسال أمر للجهاز ${imei}: ${command}`);
@@ -169,39 +260,45 @@ function getServerStats() {
 }
 
 /**
+ * ═══════════════════════════════════════════════════════════════
  * بدء تشغيل السيرفر
+ * ═══════════════════════════════════════════════════════════════
  */
 async function startServer() {
   try {
-    console.log('🔵 startServer() called');
-    
-    // اختبار الاتصال بقاعدة البيانات
     logger.info('🔍 اختبار الاتصال بقاعدة البيانات...');
-    console.log('🔵 Testing database connection...');
     
     const dbConnected = await db.testConnection();
-    console.log('🔵 Database connection result:', dbConnected);
     
     if (!dbConnected) {
       logger.error('❌ فشل الاتصال بقاعدة البيانات. تحقق من الإعدادات.');
-      console.error('❌ Database connection failed');
       process.exit(1);
     }
     
-    console.log('🔵 Starting TCP server...');
-    
-    // بدء الاستماع
     server.listen(config.server.port, config.server.host, () => {
-      console.log('🔵 TCP server listening callback fired');
       logger.info('═══════════════════════════════════════════════════════');
       logger.info(`✅ السيرفر يعمل على ${config.server.host}:${config.server.port}`);
       logger.info(`📊 المنطقة الزمنية: UTC+${config.system.timezone}`);
       logger.info('═══════════════════════════════════════════════════════');
       
-      console.log('═══════════════════════════════════════════════════════');
-      console.log(`✅ السيرفر يعمل على ${config.server.host}:${config.server.port}`);
-      console.log(`📊 المنطقة الزمنية: UTC+${config.system.timezone}`);
-      console.log('═══════════════════════════════════════════════════════');
+      // ⭐ بدء نظام القياسات الدورية
+      if (HEALTH_MONITORING_CONFIG.enabled) {
+        const intervalMs = HEALTH_MONITORING_CONFIG.intervalMinutes * 60 * 1000;
+        
+        logger.info(`\n🩺 تفعيل القياسات الدورية (كل ${HEALTH_MONITORING_CONFIG.intervalMinutes} دقيقة)`);
+        logger.info(`   ❤️  النبض: ${HEALTH_MONITORING_CONFIG.measurements.heartRate ? 'مفعل' : 'معطل'}`);
+        logger.info(`   💉 الضغط: ${HEALTH_MONITORING_CONFIG.measurements.bloodPressure ? 'مفعل' : 'معطل'}`);
+        logger.info(`   🌡️  الحرارة: ${HEALTH_MONITORING_CONFIG.measurements.temperature ? 'مفعل' : 'معطل'}`);
+        logger.info(`   🫁 الأكسجين: ${HEALTH_MONITORING_CONFIG.measurements.bloodOxygen ? 'مفعل' : 'معطل'}\n`);
+        
+        // تشغيل فوري بعد 5 ثواني
+        setTimeout(() => sendHealthMeasurementCommands(), 5000);
+        
+        // تشغيل دوري
+        setInterval(() => {
+          sendHealthMeasurementCommands();
+        }, intervalMs);
+      }
     });
     
     // إحصائيات دورية (كل 5 دقائق)
@@ -212,7 +309,7 @@ async function startServer() {
       if (config.system.enableDebug && stats.devices.length > 0) {
         logger.debug('الأجهزة المتصلة:', stats.devices);
       }
-    }, 300000); // 5 دقائق
+    }, 300000);
     
   } catch (err) {
     logger.error('❌ فشل بدء السيرفر:', err.message);
@@ -221,41 +318,24 @@ async function startServer() {
 }
 
 /**
- * معالجة إشارات إيقاف التشغيل
- */
-process.on('SIGTERM', () => {
-  logger.info('⚠️ استلام إشارة SIGTERM، إيقاف السيرفر...');
-  gracefulShutdown();
-});
-
-process.on('SIGINT', () => {
-  logger.info('⚠️ استلام إشارة SIGINT، إيقاف السيرفر...');
-  gracefulShutdown();
-});
-
-/**
  * إيقاف تشغيل آمن
  */
 function gracefulShutdown() {
   logger.info('🛑 جاري إغلاق الاتصالات...');
   
-  // إغلاق جميع الاتصالات النشطة
   for (const [clientId, socket] of activeSockets.entries()) {
     socket.end();
   }
   
-  // إغلاق السيرفر
   server.close(() => {
     logger.info('✅ تم إيقاف السيرفر بنجاح');
     
-    // إغلاق قاعدة البيانات
     db.pool.end(() => {
       logger.info('✅ تم إغلاق قاعدة البيانات');
       process.exit(0);
     });
   });
   
-  // إجبار الإغلاق بعد 10 ثواني
   setTimeout(() => {
     logger.error('⚠️ فشل الإغلاق النظيف، إغلاق قسري');
     process.exit(1);
@@ -263,8 +343,18 @@ function gracefulShutdown() {
 }
 
 /**
- * معالجة الأخطاء غير المُتوقعة
+ * معالجة إشارات الإيقاف
  */
+process.on('SIGTERM', () => {
+  logger.info('⚠️ استلام إشارة SIGTERM');
+  gracefulShutdown();
+});
+
+process.on('SIGINT', () => {
+  logger.info('⚠️ استلام إشارة SIGINT');
+  gracefulShutdown();
+});
+
 process.on('uncaughtException', (err) => {
   logger.error('❌❌ خطأ غير متوقع:', err);
   gracefulShutdown();
@@ -283,10 +373,5 @@ module.exports = {
 
 // بدء التشغيل إذا تم تشغيل الملف مباشرة
 if (require.main === module) {
-  console.log('🔵 Module is main, calling startServer()');
-  startServer().catch(err => {
-    console.error('❌❌ Fatal error in startServer:', err);
-    console.error('Stack:', err.stack);
-    process.exit(1);
-  });
+  startServer();
 }
