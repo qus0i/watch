@@ -1,0 +1,23 @@
+{
+  "name": "gps-watch-server",
+  "version": "1.0.0",
+  "description": "TCP Server for GPS Watch Integration",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "init-db": "node database/init-db.js",
+    "railway:start": "node server.js"
+  },
+  "keywords": ["gps", "watch", "tcp", "health-monitoring"],
+  "author": "Qusai Kanaan",
+  "license": "MIT",
+  "dependencies": {
+    "pg": "^8.11.3",
+    "dotenv": "^16.3.1",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
