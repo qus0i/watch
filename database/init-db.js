@@ -51,7 +51,7 @@ async function initDatabase() {
     
   } catch (err) {
     console.error('❌ خطأ في تهيئة قاعدة البيانات:', err.message);
-    process.exit(1);
+    throw err; // رمي الخطأ بدل exit
   } finally {
     await pool.end();
   }
