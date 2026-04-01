@@ -12,6 +12,11 @@ const db = require('./database/db');
 const ProtocolParser = require('./protocol/parser');
 const MessageHandlers = require('./handlers/messageHandlers');
 
+// Debug: تأكيد بدء التشغيل
+console.log('🚀 بدء تشغيل server.js...');
+console.log('📍 Node Version:', process.version);
+console.log('📍 Environment:', process.env.NODE_ENV || 'development');
+
 // تخزين الاتصالات النشطة
 const activeSockets = new Map();
 
@@ -168,21 +173,36 @@ function getServerStats() {
  */
 async function startServer() {
   try {
+    console.log('🔵 startServer() called');
+    
     // اختبار الاتصال بقاعدة البيانات
     logger.info('🔍 اختبار الاتصال بقاعدة البيانات...');
+    console.log('🔵 Testing database connection...');
+    
     const dbConnected = await db.testConnection();
+    console.log('🔵 Database connection result:', dbConnected);
     
     if (!dbConnected) {
       logger.error('❌ فشل الاتصال بقاعدة البيانات. تحقق من الإعدادات.');
+      console.error('❌ Database connection failed');
       process.exit(1);
     }
     
+    console.log('🔵 Starting TCP server...');
+    
     // بدء الاستماع
     server.listen(config.server.port, config.server.host, () => {
+      console.log('🔵 TCP server listening callback fired');
       logger.info('═══════════════════════════════════════════════════════');
       logger.info(`✅ السيرفر يعمل على ${config.server.host}:${config.server.port}`);
       logger.info(`📊 المنطقة الزمنية: UTC+${config.system.timezone}`);
       logger.info('═══════════════════════════════════════════════════════');
+      
+      console.log('═══════════════════════════════════════════════════════');
+      console.log(`✅ السيرفر يعمل على ${config.server.host}:${config.server.port}`);
+      console.log(`📊 المنطقة الزمنية: UTC+${config.system.timezone}`);
+      console.log('═══════════════════════════════════════════════════════');
+    });
     });
     
     // إحصائيات دورية (كل 5 دقائق)
@@ -264,5 +284,10 @@ module.exports = {
 
 // بدء التشغيل إذا تم تشغيل الملف مباشرة
 if (require.main === module) {
-  startServer();
+  console.log('🔵 Module is main, calling startServer()');
+  startServer().catch(err => {
+    console.error('❌❌ Fatal error in startServer:', err);
+    console.error('Stack:', err.stack);
+    process.exit(1);
+  });
 }
