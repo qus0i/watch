@@ -18,8 +18,18 @@ async function initDatabase() {
     const schemaPath = path.join(__dirname, 'schema.sql');
     const schema = fs.readFileSync(schemaPath, 'utf8');
     
-    // تنفيذ Schema
-    await pool.query(schema);
+    // تنفيذ Schema (تجاهل أخطاء "already exists")
+    try {
+      await pool.query(schema);
+    } catch (queryErr) {
+      // تجاهل فقط أخطاء "already exists"
+      if (queryErr.message && queryErr.message.includes('already exists')) {
+        console.log('⚠️  بعض الكائنات موجودة مسبقاً - تم التجاوز');
+      } else {
+        // رمي أخطاء أخرى
+        throw queryErr;
+      }
+    }
     
     console.log('✅ تم إنشاء الجداول بنجاح!\n');
     
