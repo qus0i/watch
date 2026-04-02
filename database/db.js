@@ -60,6 +60,17 @@ async function saveLocation(data) {
   try {
     const deviceId = await getOrCreateDevice(data.imei);
 
+    // ⭐ فحص صحة الإحداثيات قبل الحفظ
+    const lat = parseFloat(data.latitude);
+    const lng = parseFloat(data.longitude);
+    
+    // إذا الإحداثيات غير صحيحة أو = 0, 0
+    if (isNaN(lat) || isNaN(lng) || (lat === 0 && lng === 0)) {
+      logger.warn(`⚠️ إحداثيات غير صحيحة من ${data.imei}: lat=${data.latitude}, lng=${data.longitude}`);
+      console.log(`⚠️ تم تجاهل موقع غير صحيح من ${data.imei} (GPS غير متاح)`);
+      return false;
+    }
+
     await client.query(`
       INSERT INTO locations (
         device_id, imei, timestamp, latitude, longitude, speed, direction,
@@ -68,7 +79,7 @@ async function saveLocation(data) {
         fortification_state, working_mode
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
     `, [
-      deviceId, data.imei, data.timestamp, data.latitude, data.longitude,
+      deviceId, data.imei, data.timestamp, lat, lng,
       data.speed, data.direction, data.gpsValid, data.satelliteCount,
       data.gsmSignal, data.batteryLevel, data.mcc, data.mnc, data.lac,
       data.cellId, JSON.stringify(data.wifiData), data.fortificationState,
@@ -76,7 +87,7 @@ async function saveLocation(data) {
     ]);
 
     logger.info(`📍 تم حفظ موقع للجهاز ${data.imei}`);
-    console.log(`📍 تم حفظ موقع: ${data.latitude}, ${data.longitude} - ${data.imei}`);
+    console.log(`📍 تم حفظ موقع: ${lat}, ${lng} - ${data.imei}`);
     return true;
 
   } catch (err) {
@@ -88,17 +99,11 @@ async function saveLocation(data) {
   }
 }
 
-/**
- * ⭐ دالة محدثة لحفظ القياسات الصحية
- * إذا في قياس خلال آخر 2 دقيقة، يعمل UPDATE
- * وإلا يعمل INSERT جديد
- */
 async function saveHealthData(data) {
   const client = await pool.connect();
   try {
     const deviceId = await getOrCreateDevice(data.imei);
 
-    // البحث عن قياس حديث (خلال آخر 2 دقيقة)
     const recentMeasurement = await client.query(`
       SELECT id, timestamp FROM health_data
       WHERE device_id = $1
@@ -108,7 +113,6 @@ async function saveHealthData(data) {
     `, [deviceId]);
 
     if (recentMeasurement.rows.length > 0) {
-      // ✅ يوجد قياس حديث - نعمل UPDATE
       const measurementId = recentMeasurement.rows[0].id;
       const existingTime = recentMeasurement.rows[0].timestamp;
       
@@ -134,11 +138,10 @@ async function saveHealthData(data) {
       ]);
 
       logger.info(`📝 تم تحديث القياسات للجهاز ${data.imei} (ID: ${measurementId})`);
-      console.log(`📝 UPDATE: تم تحديث قياسات موجودة (ID: ${measurementId}, Time: ${existingTime})`);
-      console.log(`   البيانات الجديدة: نبض=${data.heartRate}, ضغط=${data.systolic}/${data.diastolic}, حرارة=${data.temperature}, أكسجين=${data.spo2}`);
+      console.log(`📝 UPDATE: تم تحديث قياسات موجودة (ID: ${measurementId})`);
+      console.log(`   البيانات: نبض=${data.heartRate}, ضغط=${data.systolic}/${data.diastolic}, حرارة=${data.temperature}, أكسجين=${data.spo2}`);
       
     } else {
-      // ✅ لا يوجد قياس حديث - نعمل INSERT جديد
       const result = await client.query(`
         INSERT INTO health_data (
           device_id, imei, heart_rate, blood_pressure_systolic, 
@@ -162,7 +165,7 @@ async function saveHealthData(data) {
       const newTime = result.rows[0].timestamp;
 
       logger.info(`✅ تم حفظ قياسات جديدة للجهاز ${data.imei} (ID: ${newId})`);
-      console.log(`✅ INSERT: تم حفظ قياسات جديدة (ID: ${newId}, Time: ${newTime})`);
+      console.log(`✅ INSERT: تم حفظ قياسات جديدة (ID: ${newId})`);
       console.log(`   البيانات: نبض=${data.heartRate}, ضغط=${data.systolic}/${data.diastolic}, حرارة=${data.temperature}, أكسجين=${data.spo2}`);
     }
 
@@ -171,7 +174,6 @@ async function saveHealthData(data) {
   } catch (err) {
     logger.error('خطأ في حفظ القياسات الصحية:', err.message);
     console.error('❌ خطأ في حفظ القياسات الصحية:', err);
-    console.error('Stack:', err.stack);
     return false;
   } finally {
     client.release();
