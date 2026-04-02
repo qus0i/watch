@@ -3,7 +3,7 @@ const db = require('../database/db');
 const ProtocolBuilder = require('../protocol/builder');
 
 /**
- * معالجات الرسائل
+ * معالجات الرسائل - مع دعم محسّن لـ AP02
  */
 
 class MessageHandlers {
@@ -16,7 +16,6 @@ class MessageHandlers {
       logger.info(`✅ تسجيل دخول ناجح: ${data.imei}`);
       
       await db.getOrCreateDevice(data.imei);
-      
       socket.imei = data.imei;
       
       const response = ProtocolBuilder.buildLoginResponse();
@@ -52,29 +51,30 @@ class MessageHandlers {
   }
 
   /**
-   * ⭐ معالجة رسالة أبراج متعددة (AP02) - دقة عالية!
+   * ⭐ معالجة رسالة أبراج متعددة (AP02) - محسّن
    */
   static async handleMultipleBases(data, socket) {
     try {
       data.imei = socket.imei;
       
       if (!data.imei) {
-        logger.warn('رسالة أبراج متعددة بدون IMEI');
+        logger.warn('رسالة AP02 بدون IMEI محدد');
         return;
       }
 
+      // حفظ الموقع باستخدام OpenCellID
       await db.saveMultipleBasesLocation(data);
       
       const response = ProtocolBuilder.buildMultipleBasesResponse();
       socket.write(response);
       
     } catch (err) {
-      logger.error('خطأ في معالجة أبراج متعددة:', err.message);
+      logger.error('خطأ في معالجة AP02:', err.message);
     }
   }
 
   /**
-   * معالجة رسالة Heartbeat
+   * معالجة Heartbeat
    */
   static async handleHeartbeat(data, socket) {
     try {
@@ -97,7 +97,7 @@ class MessageHandlers {
   }
 
   /**
-   * معالجة رسالة إنذار
+   * معالجة إنذار
    */
   static async handleAlarm(data, socket) {
     try {
@@ -126,7 +126,7 @@ class MessageHandlers {
   }
 
   /**
-   * معالجة رسالة قياس النبض
+   * معالجة قياس النبض
    */
   static async handleHeartRate(data, socket) {
     try {
@@ -148,7 +148,7 @@ class MessageHandlers {
   }
 
   /**
-   * معالجة رسالة النبض وضغط الدم
+   * معالجة النبض وضغط الدم
    */
   static async handleHeartRateBP(data, socket) {
     try {
@@ -172,7 +172,7 @@ class MessageHandlers {
   }
 
   /**
-   * معالجة رسالة القياسات الكاملة
+   * معالجة القياسات الكاملة
    */
   static async handleFullHealth(data, socket) {
     try {
@@ -198,7 +198,7 @@ class MessageHandlers {
   }
 
   /**
-   * معالجة رسالة الحرارة
+   * معالجة الحرارة
    */
   static async handleTemperature(data, socket) {
     try {
@@ -217,6 +217,18 @@ class MessageHandlers {
       
     } catch (err) {
       logger.error('خطأ في معالجة الحرارة:', err.message);
+    }
+  }
+
+  /**
+   * معالجة تأكيد الأمر
+   */
+  static async handleCommandAck(data, socket) {
+    try {
+      logger.debug(`✅ تأكيد استلام أمر: ${data.commandType}`);
+      // لا حاجة لرد
+    } catch (err) {
+      logger.error('خطأ في معالجة تأكيد الأمر:', err.message);
     }
   }
 
@@ -254,6 +266,9 @@ class MessageHandlers {
           break;
         case 'TEMPERATURE':
           await this.handleTemperature(parsedData, socket);
+          break;
+        case 'COMMAND_ACK':
+          await this.handleCommandAck(parsedData, socket);
           break;
         default:
           logger.warn(`نوع رسالة غير معالج: ${parsedData.type}`);
