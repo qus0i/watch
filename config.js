@@ -32,5 +32,36 @@ module.exports = {
     timezone: process.env.TIMEZONE || 3, // المنطقة الزمنية (للأردن +3)
     logLevel: process.env.LOG_LEVEL || 'info',
     enableDebug: process.env.DEBUG === 'true',
+  },
+
+  // ⭐ إعدادات القياسات الصحية الدورية (جديد)
+  healthMonitoring: {
+    // تفعيل/تعطيل النظام بالكامل
+    enabled: process.env.HEALTH_MONITORING_ENABLED !== 'false', // true افتراضياً
+    
+    // الفاصل الزمني بين كل جولة قياسات (بالدقائق)
+    intervalMinutes: parseInt(process.env.HEALTH_MONITORING_INTERVAL) || 5,
+    
+    // أنواع القياسات المطلوبة
+    measurements: {
+      heartRate: process.env.MEASURE_HEART_RATE !== 'false',       // قياس النبض (true افتراضياً)
+      bloodPressure: process.env.MEASURE_BLOOD_PRESSURE !== 'false', // قياس الضغط (true افتراضياً)
+      temperature: process.env.MEASURE_TEMPERATURE !== 'false',     // قياس الحرارة (true افتراضياً)
+      bloodOxygen: process.env.MEASURE_BLOOD_OXYGEN !== 'false',    // قياس الأكسجين (true افتراضياً)
+    },
+    
+    // التأخير بين كل أمر قياس (بالثواني)
+    // هذا مهم لتجنب إرهاق الساعة بأوامر متتالية
+    delayBetweenCommands: parseInt(process.env.DELAY_BETWEEN_COMMANDS) || 2,
+  },
+
+  // ⭐ إعدادات خدمات تحديد الموقع (جديد)
+  locationServices: {
+    // OpenCellID API (مجاني 100% - unlimited requests)
+    opencellid: {
+      enabled: true,
+      apiToken: process.env.OPENCELLID_TOKEN || 'pk.d85c81393cf2681894a4076dd87a04c7',
+      apiUrl: 'https://opencellid.org/cell/get',
+    },
   }
 };
