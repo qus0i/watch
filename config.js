@@ -48,6 +48,7 @@ module.exports = {
       bloodPressure: process.env.MEASURE_BLOOD_PRESSURE !== 'false', // قياس الضغط (true افتراضياً)
       temperature: process.env.MEASURE_TEMPERATURE !== 'false',     // قياس الحرارة (true افتراضياً)
       bloodOxygen: process.env.MEASURE_BLOOD_OXYGEN !== 'false',    // قياس الأكسجين (true افتراضياً)
+      location: process.env.REQUEST_LOCATION !== 'false',           // طلب الموقع (true افتراضياً)
     },
     
     // التأخير بين كل أمر قياس (بالثواني)
