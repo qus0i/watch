@@ -1,7 +1,8 @@
 /**
  * ═══════════════════════════════════════════════════════════════
- *  GPS Watch TCP Server - النسخة النهائية
- *  يرسل 3 أوامر قياس مع تأخير 20 ثانية لكل البيانات
+ *  GPS Watch TCP Server - نظام القياسات بالتناوب
+ *  كل 5 دقائق: قياس واحد (ضغط → حرارة → أكسجين)
+ *  كل 15 دقيقة: دورة كاملة في row واحد
  * ═══════════════════════════════════════════════════════════════
  */
 
@@ -17,7 +18,7 @@ console.log('🚀 بدء تشغيل server.js...');
 console.log('📍 Node Version:', process.version);
 
 // ═══════════════════════════════════════════════════════════════
-// ⭐ إعدادات القياسات الصحية الدورية
+// ⭐ إعدادات القياسات الصحية بالتناوب
 // ═══════════════════════════════════════════════════════════════
 const HEALTH_MONITORING_CONFIG = {
   enabled: true,
@@ -29,6 +30,7 @@ console.log('⚙️  إعدادات القياسات:', HEALTH_MONITORING_CONFIG
 
 const activeSockets = new Map();
 let measurementRoundCounter = 0;
+let currentMeasurementType = 0; // 0=ضغط, 1=حرارة, 2=أكسجين
 
 /**
  * إنشاء TCP Server
@@ -115,7 +117,7 @@ const server = net.createServer((socket) => {
 
 /**
  * ═══════════════════════════════════════════════════════════════
- * دوال القياسات الصحية الدورية
+ * دوال القياسات الصحية بالتناوب
  * ═══════════════════════════════════════════════════════════════
  */
 
@@ -123,47 +125,47 @@ async function sendHealthMeasurementCommands() {
   try {
     measurementRoundCounter++;
     
+    const measurementTypes = ['💉 ضغط + نبض', '🌡️ حرارة', '🫁 أكسجين'];
+    const cycleNumber = Math.ceil(measurementRoundCounter / 3);
+    const positionInCycle = ((measurementRoundCounter - 1) % 3) + 1;
+    
     console.log('\n═══════════════════════════════════════════════════════');
     console.log(`🩺 جولة قياس #${measurementRoundCounter} - ${new Date().toLocaleString('ar-JO')}`);
+    console.log(`🔄 الدورة #${cycleNumber} - القياس ${positionInCycle}/3`);
+    console.log(`📊 نوع القياس: ${measurementTypes[currentMeasurementType]}`);
     console.log('═══════════════════════════════════════════════════════');
     
     const connectedDevices = [];
     for (const [clientId, socket] of activeSockets.entries()) {
-      console.log(`🔍 فحص ${clientId}: IMEI = ${socket.imei || 'لا يوجد'}`);
-      
       if (socket.imei) {
         connectedDevices.push({
           imei: socket.imei,
           socket: socket,
           clientId: clientId
         });
-        console.log(`   ✅ تمت إضافة ${socket.imei}`);
-      } else {
-        console.log(`   ⚠️ تم تجاهله (لا يوجد IMEI)`);
       }
     }
 
-    console.log(`\n📱 إجمالي الأجهزة المتصلة: ${activeSockets.size}`);
-    console.log(`✅ الأجهزة الجاهزة للقياس: ${connectedDevices.length}\n`);
+    console.log(`📱 أجهزة جاهزة للقياس: ${connectedDevices.length}\n`);
 
     if (connectedDevices.length === 0) {
       console.log('⚠️ لا توجد أجهزة متصلة للقياس');
-      logger.debug('لا توجد أجهزة متصلة للقياس');
       return;
     }
 
-    logger.info(`🩺 بدء إرسال أوامر القياس لـ ${connectedDevices.length} جهاز`);
-
     for (const device of connectedDevices) {
-      console.log(`\n📤 معالجة الجهاز: ${device.imei}`);
-      await sendMeasurementCommandsToDevice(device.imei, device.socket);
-      await delay(5000); // تأخير 5 ثواني بين الأجهزة
+      console.log(`📤 إرسال قياس لـ: ${device.imei}`);
+      await sendMeasurementCommandToDevice(device.imei, device.socket);
     }
 
-    console.log('\n✅ اكتملت جولة القياسات');
-    console.log(`⏰ الجولة القادمة بعد ${HEALTH_MONITORING_CONFIG.intervalMinutes} دقيقة\n`);
+    console.log('\n✅ اكتملت الجولة');
+    console.log(`⏰ الجولة القادمة بعد ${HEALTH_MONITORING_CONFIG.intervalMinutes} دقيقة`);
     
-    logger.info('✅ اكتملت جولة القياسات');
+    if (positionInCycle === 3) {
+      console.log(`🎉 اكتملت الدورة #${cycleNumber} - تم حفظ جميع القياسات في row واحد!\n`);
+    } else {
+      console.log(`📝 القياس ${positionInCycle}/3 - باقي ${3 - positionInCycle} قياس لإتمام الدورة\n`);
+    }
 
   } catch (err) {
     logger.error('❌ خطأ في إرسال أوامر القياس:', err.message);
@@ -172,44 +174,46 @@ async function sendHealthMeasurementCommands() {
 }
 
 /**
- * ⭐ إرسال 3 أوامر قياس مع تأخير 20 ثانية
- * عشان نحصل على كل البيانات: نبض + ضغط + حرارة + أكسجين
+ * ⭐ إرسال أمر قياس واحد حسب الدور
  */
-async function sendMeasurementCommandsToDevice(imei, socket) {
+async function sendMeasurementCommandToDevice(imei, socket) {
   try {
-    console.log(`📤 إرسال أوامر القياس الشاملة لـ ${imei}`);
-    console.log(`⏰ المدة المتوقعة: ~60 ثانية للحصول على جميع البيانات\n`);
+    let cmd;
+    let commandName;
+    
+    if (currentMeasurementType === 0) {
+      // جولة ضغط + نبض
+      cmd = ProtocolBuilder.buildBloodPressureTestCommand(imei);
+      commandName = '💉 ضغط + نبض';
+      console.log(`   ${commandName}`);
+      console.log(`   📤 ${cmd}`);
+      currentMeasurementType = 1; // التالي: حرارة
+      
+    } else if (currentMeasurementType === 1) {
+      // جولة حرارة
+      cmd = ProtocolBuilder.buildTemperatureTestCommand(imei);
+      commandName = '🌡️ حرارة';
+      console.log(`   ${commandName}`);
+      console.log(`   📤 ${cmd}`);
+      currentMeasurementType = 2; // التالي: أكسجين
+      
+    } else {
+      // جولة أكسجين
+      cmd = ProtocolBuilder.buildOxygenTestCommand(imei);
+      commandName = '🫁 أكسجين';
+      console.log(`   ${commandName}`);
+      console.log(`   📤 ${cmd}`);
+      currentMeasurementType = 0; // التالي: رجوع للضغط (دورة جديدة)
+    }
+    
+    socket.write(cmd);
+    console.log(`   ✅ تم الإرسال - النتائج خلال 30 ثانية\n`);
 
-    // 1️⃣ قياس الضغط والنبض (BPXY)
-    console.log(`   1/3 💉 إرسال أمر: ضغط + نبض`);
-    const cmdBP = ProtocolBuilder.buildBloodPressureTestCommand(imei);
-    socket.write(cmdBP);
-    console.log(`       📤 ${cmdBP}`);
-    console.log(`       ⏳ انتظار 20 ثانية للساعة تكمل القياس...\n`);
-    await delay(20000); // 20 ثانية
-
-    // 2️⃣ قياس الحرارة (BPXT)
-    console.log(`   2/3 🌡️  إرسال أمر: حرارة`);
-    const cmdTemp = ProtocolBuilder.buildTemperatureTestCommand(imei);
-    socket.write(cmdTemp);
-    console.log(`       📤 ${cmdTemp}`);
-    console.log(`       ⏳ انتظار 20 ثانية للساعة تكمل القياس...\n`);
-    await delay(20000); // 20 ثانية
-
-    // 3️⃣ قياس الأكسجين (BPXZ)
-    console.log(`   3/3 🫁 إرسال أمر: أكسجين`);
-    const cmdOxy = ProtocolBuilder.buildOxygenTestCommand(imei);
-    socket.write(cmdOxy);
-    console.log(`       📤 ${cmdOxy}`);
-    console.log(`       ⏳ انتظار النتائج...\n`);
-
-    logger.info(`✓ تم إرسال 3 أوامر قياس لـ ${imei}`);
-    console.log(`   ✅ تم إرسال جميع الأوامر بنجاح`);
-    console.log(`   📊 النتائج ستظهر في قاعدة البيانات خلال 1-2 دقيقة\n`);
+    logger.info(`✓ تم إرسال ${commandName} لـ ${imei}`);
 
   } catch (err) {
-    logger.error(`❌ خطأ في إرسال الأوامر لـ ${imei}:`, err.message);
-    console.error(`❌ خطأ في إرسال الأوامر لـ ${imei}:`, err);
+    logger.error(`❌ خطأ في إرسال الأمر لـ ${imei}:`, err.message);
+    console.error(`❌ خطأ في إرسال الأمر لـ ${imei}:`, err);
   }
 }
 
@@ -267,7 +271,6 @@ async function startServer() {
     console.log('🔵 اختبار الاتصال بقاعدة البيانات...');
     
     const dbConnected = await db.testConnection();
-    console.log('🔵 نتيجة الاتصال بقاعدة البيانات:', dbConnected);
     
     if (!dbConnected) {
       logger.error('❌ فشل الاتصال بقاعدة البيانات');
@@ -275,10 +278,7 @@ async function startServer() {
       process.exit(1);
     }
     
-    console.log('🔵 بدء TCP server...');
-    
     server.listen(config.server.port, config.server.host, () => {
-      console.log('🔵 TCP server listening callback fired');
       logger.info('═══════════════════════════════════════════════════════');
       logger.info(`✅ السيرفر يعمل على ${config.server.host}:${config.server.port}`);
       logger.info(`📊 المنطقة الزمنية: UTC+${config.system.timezone}`);
@@ -292,22 +292,22 @@ async function startServer() {
       if (HEALTH_MONITORING_CONFIG.enabled) {
         const intervalMs = HEALTH_MONITORING_CONFIG.intervalMinutes * 60 * 1000;
         
-        console.log(`\n🩺 تفعيل القياسات الدورية`);
+        console.log(`\n🩺 تفعيل نظام القياسات بالتناوب`);
         console.log(`   ⏰ الفترة: كل ${HEALTH_MONITORING_CONFIG.intervalMinutes} دقيقة`);
-        console.log(`   📊 القياسات: ضغط + نبض + حرارة + أكسجين (3 أوامر)`);
-        console.log(`   ⏱️  التأخير بين الأوامر: 20 ثانية`);
+        console.log(`   🔄 النظام: قياس واحد كل جولة (ضغط → حرارة → أكسجين)`);
+        console.log(`   📦 التخزين: كل 3 جولات (15 دقيقة) = row واحد`);
         console.log(`   🐛 Debug Mode: ${HEALTH_MONITORING_CONFIG.debugMode}\n`);
         
-        logger.info(`🩺 تفعيل القياسات الدورية (كل ${HEALTH_MONITORING_CONFIG.intervalMinutes} دقيقة)`);
+        logger.info(`🩺 تفعيل القياسات بالتناوب (كل ${HEALTH_MONITORING_CONFIG.intervalMinutes} دقيقة)`);
         
-        console.log('⏰ سيتم إرسال أول جولة قياسات بعد 10 ثواني...\n');
+        console.log('⏰ سيتم إرسال أول قياس بعد 10 ثواني...\n');
         setTimeout(() => {
           console.log('🔔 حان وقت الجولة الأولى!');
           sendHealthMeasurementCommands();
         }, 10000);
         
         setInterval(() => {
-          console.log('🔔 حان وقت جولة قياسات جديدة!');
+          console.log('🔔 حان وقت جولة قياس جديدة!');
           sendHealthMeasurementCommands();
         }, intervalMs);
       }
@@ -315,16 +315,12 @@ async function startServer() {
     
     setInterval(() => {
       const stats = getServerStats();
+      const cycleNumber = Math.ceil(measurementRoundCounter / 3);
+      const positionInCycle = measurementRoundCounter % 3 || 3;
+      
       console.log(`\n📊 [إحصائيات] اتصالات نشطة: ${stats.totalConnections}`);
-      
-      if (stats.devices.length > 0) {
-        console.log('📱 الأجهزة المتصلة:');
-        stats.devices.forEach(device => {
-          console.log(`   - ${device.imei} (${device.clientId})`);
-        });
-      }
-      
-      console.log(`🔄 جولات القياس المكتملة: ${measurementRoundCounter}\n`);
+      console.log(`🔄 الدورة الحالية: #${cycleNumber} - القياس ${positionInCycle}/3`);
+      console.log(`📈 إجمالي الجولات: ${measurementRoundCounter}\n`);
       
       logger.info(`📊 إحصائيات: ${stats.totalConnections} اتصال نشط`);
     }, 120000);
@@ -356,21 +352,14 @@ function gracefulShutdown() {
   });
   
   setTimeout(() => {
-    logger.error('⚠️ فشل الإغلاق النظيح، إغلاق قسري');
+    logger.error('⚠️ فشل الإغلاق النظيف، إغلاق قسري');
     console.error('⚠️ فشل الإغلاق النظيف، إغلاق قسري');
     process.exit(1);
   }, 10000);
 }
 
-process.on('SIGTERM', () => {
-  logger.info('⚠️ استلام إشارة SIGTERM');
-  gracefulShutdown();
-});
-
-process.on('SIGINT', () => {
-  logger.info('⚠️ استلام إشارة SIGINT');
-  gracefulShutdown();
-});
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
 
 process.on('uncaughtException', (err) => {
   logger.error('❌❌ خطأ غير متوقع:', err);
