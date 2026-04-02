@@ -4,7 +4,6 @@ const ProtocolBuilder = require('../protocol/builder');
 
 /**
  * معالجات الرسائل
- * كل معالج يستقبل البيانات المحللة ويعالجها
  */
 
 class MessageHandlers {
@@ -16,13 +15,10 @@ class MessageHandlers {
     try {
       logger.info(`✅ تسجيل دخول ناجح: ${data.imei}`);
       
-      // حفظ أو تحديث الجهاز في قاعدة البيانات
       await db.getOrCreateDevice(data.imei);
       
-      // حفظ IMEI في الـ socket للاستخدام لاحقاً
       socket.imei = data.imei;
       
-      // إرسال الرد
       const response = ProtocolBuilder.buildLoginResponse();
       socket.write(response);
       
@@ -38,7 +34,6 @@ class MessageHandlers {
    */
   static async handleLocation(data, socket) {
     try {
-      // إضافة IMEI من السياق
       data.imei = socket.imei;
       
       if (!data.imei) {
@@ -46,15 +41,35 @@ class MessageHandlers {
         return;
       }
 
-      // حفظ في قاعدة البيانات
       await db.saveLocation(data);
       
-      // إرسال الرد
       const response = ProtocolBuilder.buildLocationResponse();
       socket.write(response);
       
     } catch (err) {
       logger.error('خطأ في معالجة الموقع:', err.message);
+    }
+  }
+
+  /**
+   * ⭐ معالجة رسالة أبراج متعددة (AP02) - دقة عالية!
+   */
+  static async handleMultipleBases(data, socket) {
+    try {
+      data.imei = socket.imei;
+      
+      if (!data.imei) {
+        logger.warn('رسالة أبراج متعددة بدون IMEI');
+        return;
+      }
+
+      await db.saveMultipleBasesLocation(data);
+      
+      const response = ProtocolBuilder.buildMultipleBasesResponse();
+      socket.write(response);
+      
+    } catch (err) {
+      logger.error('خطأ في معالجة أبراج متعددة:', err.message);
     }
   }
 
@@ -67,15 +82,12 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
-      // تحديث آخر اتصال
       await db.getOrCreateDevice(data.imei);
       
-      // تحديث الخطوات اليومية
       if (data.stepCount) {
         await db.updateDailySteps(data.imei, data.stepCount, data.rollFrequency);
       }
       
-      // إرسال الرد
       const response = ProtocolBuilder.buildHeartbeatResponse();
       socket.write(response);
       
@@ -93,10 +105,8 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
-      // حفظ الموقع
       await db.saveLocation(data);
       
-      // حفظ الإنذار
       await db.saveAlert({
         imei: data.imei,
         timestamp: data.timestamp,
@@ -105,10 +115,8 @@ class MessageHandlers {
         longitude: data.longitude,
       });
       
-      // TODO: إرسال إشعار للمستخدم (Push Notification / SMS / Email)
       logger.warn(`🚨 إنذار ${data.alertType} من ${data.imei}`);
       
-      // إرسال الرد
       const response = ProtocolBuilder.buildAlarmResponse();
       socket.write(response);
       
@@ -213,20 +221,6 @@ class MessageHandlers {
   }
 
   /**
-   * معالجة رسالة أبراج متعددة
-   */
-  static async handleMultipleBases(data, socket) {
-    try {
-      // مجرد رد بسيط
-      const response = ProtocolBuilder.buildMultipleBasesResponse();
-      socket.write(response);
-      
-    } catch (err) {
-      logger.error('خطأ في معالجة أبراج متعددة:', err.message);
-    }
-  }
-
-  /**
    * توجيه الرسالة للمعالج المناسب
    */
   static async route(parsedData, socket) {
@@ -239,6 +233,9 @@ class MessageHandlers {
           break;
         case 'LOCATION':
           await this.handleLocation(parsedData, socket);
+          break;
+        case 'MULTIPLE_BASES':
+          await this.handleMultipleBases(parsedData, socket);
           break;
         case 'HEARTBEAT':
           await this.handleHeartbeat(parsedData, socket);
@@ -257,9 +254,6 @@ class MessageHandlers {
           break;
         case 'TEMPERATURE':
           await this.handleTemperature(parsedData, socket);
-          break;
-        case 'MULTIPLE_BASES':
-          await this.handleMultipleBases(parsedData, socket);
           break;
         default:
           logger.warn(`نوع رسالة غير معالج: ${parsedData.type}`);
