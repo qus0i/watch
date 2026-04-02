@@ -299,6 +299,66 @@ async function logCommand(imei, commandType, commandData, journalNo) {
   }
 }
 
+/**
+ * ⭐ حفظ موقع من AP02 (أبراج متعددة + WiFi)
+ */
+async function saveMultipleBasesLocation(data) {
+  const client = await pool.connect();
+  try {
+    const deviceId = await getOrCreateDevice(data.imei);
+    
+    // استخدام أول برج للحصول على الموقع
+    if (data.cellTowers && data.cellTowers.length > 0) {
+      const firstTower = data.cellTowers[0];
+      
+      logger.info(`🔍 محاولة تحديد الموقع من ${data.cellTowers.length} أبراج + ${data.wifiNetworks ? data.wifiNetworks.length : 0} WiFi`);
+      
+      const lbsLocation = await getLocationFromOpenCellID(
+        data.mcc,
+        data.mnc,
+        firstTower.lac,
+        firstTower.cellId
+      );
+      
+      if (lbsLocation) {
+        // حفظ الموقع في قاعدة البيانات
+        await client.query(`
+          INSERT INTO locations (
+            device_id, imei, timestamp, latitude, longitude, speed, direction,
+            gps_valid, satellite_count, gsm_signal, battery_level,
+            mcc, mnc, lac, cell_id,
+            fortification_state, working_mode,
+            location_source, accuracy
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+        `, [
+          deviceId, data.imei, data.timestamp, 
+          lbsLocation.latitude, lbsLocation.longitude,
+          0, 0, // speed, direction
+          false, 0, 0, 0, // gpsValid, satelliteCount, gsmSignal, batteryLevel
+          data.mcc, data.mnc, firstTower.lac, firstTower.cellId,
+          0, 0, // fortificationState, workingMode
+          'LBS-OpenCellID-AP02', lbsLocation.accuracy
+        ]);
+
+        logger.info(`✅ تم حفظ موقع من AP02 (المصدر: LBS-OpenCellID-AP02)`);
+        return true;
+      } else {
+        logger.warn(`⚠️ فشل الحصول على موقع من AP02`);
+        return false;
+      }
+    } else {
+      logger.warn(`⚠️ AP02 بدون أبراج`);
+      return false;
+    }
+
+  } catch (err) {
+    logger.error('خطأ في حفظ موقع AP02:', err.message);
+    return false;
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   pool,
   testConnection,
@@ -309,4 +369,5 @@ module.exports = {
   updateDailySteps,
   logCommand,
   getLocationFromOpenCellID, // ⭐ دالة جديدة
+  saveMultipleBasesLocation, // ⭐ دالة جديدة لـ AP02
 };
