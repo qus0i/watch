@@ -1,7 +1,7 @@
 /**
  * ═══════════════════════════════════════════════════════════════
  *  GPS Watch TCP Server مع القياسات الصحية الدورية
- *  نسخة محسنة ومختبرة
+ *  يرسل 3 أوامر قياس مع تجميع ذكي في قاعدة البيانات
  * ═══════════════════════════════════════════════════════════════
  */
 
@@ -13,7 +13,6 @@ const ProtocolParser = require('./protocol/parser');
 const MessageHandlers = require('./handlers/messageHandlers');
 const ProtocolBuilder = require('./protocol/builder');
 
-// Debug: تأكيد بدء التشغيل
 console.log('🚀 بدء تشغيل server.js...');
 console.log('📍 Node Version:', process.version);
 
@@ -21,18 +20,14 @@ console.log('📍 Node Version:', process.version);
 // ⭐ إعدادات القياسات الصحية الدورية
 // ═══════════════════════════════════════════════════════════════
 const HEALTH_MONITORING_CONFIG = {
-  enabled: true,                     // تفعيل/تعطيل
-  intervalMinutes: 5,                // كل كم دقيقة
-  measurementType: 'bloodPressure',  // نوع القياس
-  debugMode: true,                   // تفعيل الـ debug للتشخيص
+  enabled: true,
+  intervalMinutes: 5,
+  debugMode: true,
 };
 
 console.log('⚙️  إعدادات القياسات:', HEALTH_MONITORING_CONFIG);
 
-// تخزين الاتصالات النشطة
 const activeSockets = new Map();
-
-// عداد لجولات القياس
 let measurementRoundCounter = 0;
 
 /**
@@ -125,9 +120,6 @@ const server = net.createServer((socket) => {
  * ═══════════════════════════════════════════════════════════════
  */
 
-/**
- * دالة إرسال أوامر القياس لجميع الأجهزة المتصلة
- */
 async function sendHealthMeasurementCommands() {
   try {
     measurementRoundCounter++;
@@ -136,7 +128,6 @@ async function sendHealthMeasurementCommands() {
     console.log(`🩺 جولة قياس #${measurementRoundCounter} - ${new Date().toLocaleString('ar-JO')}`);
     console.log('═══════════════════════════════════════════════════════');
     
-    // جمع الأجهزة المتصلة
     const connectedDevices = [];
     for (const [clientId, socket] of activeSockets.entries()) {
       console.log(`🔍 فحص ${clientId}: IMEI = ${socket.imei || 'لا يوجد'}`);
@@ -157,18 +148,17 @@ async function sendHealthMeasurementCommands() {
     console.log(`✅ الأجهزة الجاهزة للقياس: ${connectedDevices.length}\n`);
 
     if (connectedDevices.length === 0) {
-      console.log('⚠️ لا توجد أجهزة متصلة للقياس (تأكد من تسجيل دخول الساعات)');
+      console.log('⚠️ لا توجد أجهزة متصلة للقياس');
       logger.debug('لا توجد أجهزة متصلة للقياس');
       return;
     }
 
     logger.info(`🩺 بدء إرسال أوامر القياس لـ ${connectedDevices.length} جهاز`);
 
-    // إرسال الأوامر لكل جهاز
     for (const device of connectedDevices) {
       console.log(`\n📤 معالجة الجهاز: ${device.imei}`);
-      await sendMeasurementCommandToDevice(device.imei, device.socket);
-      await delay(2000); // تأخير 2 ثانية بين الأجهزة
+      await sendMeasurementCommandsToDevice(device.imei, device.socket);
+      await delay(2000);
     }
 
     console.log('\n✅ اكتملت جولة القياسات');
@@ -183,86 +173,43 @@ async function sendHealthMeasurementCommands() {
 }
 
 /**
- * إرسال أمر قياس واحد لجهاز
+ * إرسال 3 أوامر قياس لجهاز واحد
+ * النتائج تتجمع في row واحد في قاعدة البيانات
  */
-async function sendMeasurementCommandToDevice(imei, socket) {
+async function sendMeasurementCommandsToDevice(imei, socket) {
   try {
-    const measurementType = HEALTH_MONITORING_CONFIG.measurementType;
-    let cmd;
-    let measurementName;
+    console.log(`📤 إرسال أوامر القياس الشاملة لـ ${imei}`);
 
-    // التأكد من وجود ProtocolBuilder
-    if (!ProtocolBuilder) {
-      throw new Error('ProtocolBuilder غير موجود');
-    }
+    // 1. قياس الضغط والنبض (BPXY)
+    const cmdBP = ProtocolBuilder.buildBloodPressureTestCommand(imei);
+    socket.write(cmdBP);
+    console.log(`   💉 ضغط + نبض: ${cmdBP}`);
+    await delay(3000);
 
-    // اختيار نوع القياس
-    switch (measurementType) {
-      case 'heartRate':
-        if (!ProtocolBuilder.buildHeartRateTestCommand) {
-          throw new Error('buildHeartRateTestCommand غير موجودة في ProtocolBuilder');
-        }
-        cmd = ProtocolBuilder.buildHeartRateTestCommand(imei);
-        measurementName = 'النبض';
-        break;
-      
-      case 'bloodPressure':
-        if (!ProtocolBuilder.buildBloodPressureTestCommand) {
-          throw new Error('buildBloodPressureTestCommand غير موجودة في ProtocolBuilder');
-        }
-        cmd = ProtocolBuilder.buildBloodPressureTestCommand(imei);
-        measurementName = 'الضغط والنبض';
-        break;
-      
-      case 'temperature':
-        if (!ProtocolBuilder.buildTemperatureTestCommand) {
-          throw new Error('buildTemperatureTestCommand غير موجودة في ProtocolBuilder');
-        }
-        cmd = ProtocolBuilder.buildTemperatureTestCommand(imei);
-        measurementName = 'الحرارة';
-        break;
-      
-      case 'bloodOxygen':
-        if (!ProtocolBuilder.buildOxygenTestCommand) {
-          throw new Error('buildOxygenTestCommand غير موجودة في ProtocolBuilder');
-        }
-        cmd = ProtocolBuilder.buildOxygenTestCommand(imei);
-        measurementName = 'الأكسجين';
-        break;
-      
-      default:
-        cmd = ProtocolBuilder.buildBloodPressureTestCommand(imei);
-        measurementName = 'الضغط والنبض';
-    }
+    // 2. قياس الحرارة (BPXT)
+    const cmdTemp = ProtocolBuilder.buildTemperatureTestCommand(imei);
+    socket.write(cmdTemp);
+    console.log(`   🌡️  حرارة: ${cmdTemp}`);
+    await delay(3000);
 
-    console.log(`   📊 نوع القياس: ${measurementName}`);
-    console.log(`   📤 الأمر: ${cmd}`);
-    
-    // إرسال الأمر
-    socket.write(cmd);
-    
-    console.log(`   ✅ تم الإرسال بنجاح`);
-    logger.info(`✓ تم إرسال أمر ${measurementName} لـ ${imei}`);
+    // 3. قياس الأكسجين (BPXZ)
+    const cmdOxy = ProtocolBuilder.buildOxygenTestCommand(imei);
+    socket.write(cmdOxy);
+    console.log(`   🫁 أكسجين: ${cmdOxy}`);
+
+    logger.info(`✓ تم إرسال 3 أوامر قياس لـ ${imei}`);
+    console.log(`   ✅ تم إرسال 3 أوامر بنجاح`);
 
   } catch (err) {
     logger.error(`❌ خطأ في إرسال الأوامر لـ ${imei}:`, err.message);
     console.error(`❌ خطأ في إرسال الأوامر لـ ${imei}:`, err);
-    console.error('Stack:', err.stack);
   }
 }
 
-/**
- * دالة مساعدة للتأخير
- */
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/**
- * ═══════════════════════════════════════════════════════════════
- * معالجة أخطاء السيرفر
- * ═══════════════════════════════════════════════════════════════
- */
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     logger.error(`❌ البورت ${config.server.port} مستخدم بالفعل!`);
@@ -305,11 +252,6 @@ function getServerStats() {
   return stats;
 }
 
-/**
- * ═══════════════════════════════════════════════════════════════
- * بدء تشغيل السيرفر
- * ═══════════════════════════════════════════════════════════════
- */
 async function startServer() {
   try {
     console.log('🔵 startServer() called');
@@ -321,7 +263,7 @@ async function startServer() {
     console.log('🔵 نتيجة الاتصال بقاعدة البيانات:', dbConnected);
     
     if (!dbConnected) {
-      logger.error('❌ فشل الاتصال بقاعدة البيانات. تحقق من الإعدادات.');
+      logger.error('❌ فشل الاتصال بقاعدة البيانات');
       console.error('❌ فشل الاتصال بقاعدة البيانات');
       process.exit(1);
     }
@@ -340,52 +282,29 @@ async function startServer() {
       console.log(`📊 المنطقة الزمنية: UTC+${config.system.timezone}`);
       console.log('═══════════════════════════════════════════════════════');
       
-      // ⭐ بدء نظام القياسات الدورية
       if (HEALTH_MONITORING_CONFIG.enabled) {
         const intervalMs = HEALTH_MONITORING_CONFIG.intervalMinutes * 60 * 1000;
-        const measurementNames = {
-          heartRate: 'النبض',
-          bloodPressure: 'الضغط والنبض',
-          temperature: 'الحرارة',
-          bloodOxygen: 'الأكسجين'
-        };
         
         console.log(`\n🩺 تفعيل القياسات الدورية`);
-        console.log(`   ⏰ الفترة: كل ${HEALTH_MONITORING_CONFIG.intervalMinutes} دقيقة (${intervalMs}ms)`);
-        console.log(`   📊 نوع القياس: ${measurementNames[HEALTH_MONITORING_CONFIG.measurementType]}`);
+        console.log(`   ⏰ الفترة: كل ${HEALTH_MONITORING_CONFIG.intervalMinutes} دقيقة`);
+        console.log(`   📊 نوع القياسات: ضغط + حرارة + أكسجين`);
         console.log(`   🐛 Debug Mode: ${HEALTH_MONITORING_CONFIG.debugMode}\n`);
         
         logger.info(`🩺 تفعيل القياسات الدورية (كل ${HEALTH_MONITORING_CONFIG.intervalMinutes} دقيقة)`);
-        logger.info(`   📊 نوع القياس: ${measurementNames[HEALTH_MONITORING_CONFIG.measurementType]}`);
         
-        // ⭐ تشغيل فوري بعد 10 ثواني (للتأكد من اتصال الساعات)
         console.log('⏰ سيتم إرسال أول جولة قياسات بعد 10 ثواني...\n');
         setTimeout(() => {
           console.log('🔔 حان وقت الجولة الأولى!');
           sendHealthMeasurementCommands();
         }, 10000);
         
-        // ⭐ تشغيل دوري
-        const intervalId = setInterval(() => {
+        setInterval(() => {
           console.log('🔔 حان وقت جولة قياسات جديدة!');
           sendHealthMeasurementCommands();
         }, intervalMs);
-        
-        console.log(`✅ تم ضبط الـ interval: كل ${intervalMs}ms`);
-        console.log(`📍 Interval ID: ${intervalId}\n`);
-        
-        // التأكد من أن الـ interval شغال
-        if (intervalId) {
-          console.log('✅ الـ Interval تم إنشاؤه بنجاح');
-        } else {
-          console.error('❌ فشل في إنشاء الـ Interval!');
-        }
-      } else {
-        console.log('\n⚠️ نظام القياسات الدورية معطل في الإعدادات\n');
       }
     });
     
-    // إحصائيات دورية (كل 2 دقيقة للتشخيص)
     setInterval(() => {
       const stats = getServerStats();
       console.log(`\n📊 [إحصائيات] اتصالات نشطة: ${stats.totalConnections}`);
@@ -400,16 +319,11 @@ async function startServer() {
       console.log(`🔄 جولات القياس المكتملة: ${measurementRoundCounter}\n`);
       
       logger.info(`📊 إحصائيات: ${stats.totalConnections} اتصال نشط`);
-      
-      if (config.system.enableDebug && stats.devices.length > 0) {
-        logger.debug('الأجهزة المتصلة:', stats.devices);
-      }
-    }, 120000); // كل 2 دقيقة
+    }, 120000);
     
   } catch (err) {
     logger.error('❌ فشل بدء السيرفر:', err.message);
     console.error('❌❌ Fatal error in startServer:', err);
-    console.error('Stack:', err.stack);
     process.exit(1);
   }
 }
@@ -471,7 +385,6 @@ if (require.main === module) {
   console.log('🔵 Module is main, calling startServer()');
   startServer().catch(err => {
     console.error('❌❌ Fatal error:', err);
-    console.error('Stack:', err.stack);
     process.exit(1);
   });
 }
