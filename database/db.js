@@ -33,14 +33,12 @@ async function testConnection() {
 async function getOrCreateDevice(imei) {
   const client = await pool.connect();
   try {
-    // البحث عن الجهاز
     let result = await client.query(
       'SELECT id FROM devices WHERE imei = $1',
       [imei]
     );
 
     if (result.rows.length > 0) {
-      // تحديث آخر اتصال
       await client.query(
         'UPDATE devices SET last_connection = NOW() WHERE imei = $1',
         [imei]
@@ -48,7 +46,6 @@ async function getOrCreateDevice(imei) {
       return result.rows[0].id;
     }
 
-    // إنشاء جهاز جديد
     result = await client.query(
       'INSERT INTO devices (imei, last_connection) VALUES ($1, NOW()) RETURNING id',
       [imei]
@@ -64,62 +61,67 @@ async function getOrCreateDevice(imei) {
 
 /**
  * ⭐ دالة محسّنة للحصول على الموقع من OpenCellID
- * @param {number} mcc - Mobile Country Code
- * @param {number} mnc - Mobile Network Code
- * @param {number} lac - Location Area Code
- * @param {number} cellId - Cell ID
- * @returns {object|null} - {latitude, longitude, accuracy} أو null
  */
 async function getLocationFromOpenCellID(mcc, mnc, lac, cellId) {
   try {
     const { apiToken, apiUrl } = config.locationServices.opencellid;
     
-    // بناء URL الطلب
     const url = `${apiUrl}?key=${apiToken}&mcc=${mcc}&mnc=${mnc}&lac=${lac}&cellid=${cellId}&format=json`;
     
     logger.debug(`📡 طلب موقع من OpenCellID: MCC=${mcc}, MNC=${mnc}, LAC=${lac}, CellID=${cellId}`);
     
     const https = require('https');
     
-    return new Promise((resolve, reject) => {
-      https.get(url, (res) => {
+    return new Promise((resolve) => {
+      const req = https.get(url, (res) => {
         let data = '';
-        
+
         res.on('data', (chunk) => {
           data += chunk;
         });
-        
+
         res.on('end', () => {
           try {
             if (res.statusCode === 200) {
               const result = JSON.parse(data);
-              
+
               if (result.lat && result.lon) {
                 logger.info(`✅ تم الحصول على موقع من OpenCellID: ${result.lat}, ${result.lon}`);
-                
+
                 resolve({
                   latitude: parseFloat(result.lat),
                   longitude: parseFloat(result.lon),
-                  accuracy: result.range || 500, // الدقة بالمتر (افتراضي 500م)
+                  accuracy: result.range || 500,
                   source: 'OpenCellID'
                 });
               } else {
-                logger.warn('⚠️ OpenCellID: بيانات غير كاملة');
+                logger.warn(`⚠️ OpenCellID: بيانات غير كاملة - ${data}`);
                 resolve(null);
               }
             } else if (res.statusCode === 404) {
-              logger.warn(`⚠️ OpenCellID: البرج غير موجود في قاعدة البيانات (404)`);
+              logger.warn(`⚠️ OpenCellID: البرج غير موجود (404) - MCC=${mcc} MNC=${mnc} LAC=${lac} CellID=${cellId}`);
+              resolve(null);
+            } else if (res.statusCode === 401 || res.statusCode === 403) {
+              logger.error(`❌ OpenCellID: رمز API غير صالح أو منتهي الصلاحية (${res.statusCode}) - تحقق من OPENCELLID_TOKEN`);
               resolve(null);
             } else {
-              logger.error(`❌ OpenCellID error: ${res.statusCode}`);
+              logger.error(`❌ OpenCellID error: ${res.statusCode} - ${data}`);
               resolve(null);
             }
           } catch (err) {
-            logger.error('❌ خطأ في تحليل استجابة OpenCellID:', err.message);
+            logger.error('❌ خطأ في تحليل استجابة OpenCellID:', err.message, '- raw:', data);
             resolve(null);
           }
         });
-      }).on('error', (err) => {
+      });
+
+      req.setTimeout(8000, () => {
+        req.destroy();
+        logger.error('❌ OpenCellID: انتهت مهلة الطلب (8 ثواني)');
+        resolve(null);
+      });
+
+      req.on('error', (err) => {
         logger.error('❌ خطأ في الاتصال بـ OpenCellID:', err.message);
         resolve(null);
       });
@@ -142,9 +144,8 @@ async function saveLocation(data) {
     let latitude = data.latitude;
     let longitude = data.longitude;
     let locationSource = 'GPS';
-    let accuracy = 10; // دقة GPS افتراضياً 10 متر
+    let accuracy = 10;
     
-    // إذا GPS غير صحيح، استخدم OpenCellID
     if (!data.gpsValid || latitude === 0 || longitude === 0) {
       logger.warn(`⚠️ GPS غير متاح من ${data.imei} - استخدام OpenCellID...`);
       
@@ -164,12 +165,10 @@ async function saveLocation(data) {
         logger.info(`✅ تم الحصول على موقع من OpenCellID: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} (دقة: ${accuracy}م)`);
       } else {
         logger.error(`❌ فشل الحصول على الموقع من GPS و OpenCellID`);
-        // لا نحفظ موقع بدون إحداثيات صحيحة
         return false;
       }
     }
 
-    // حفظ الموقع في قاعدة البيانات
     await client.query(`
       INSERT INTO locations (
         device_id, imei, timestamp, latitude, longitude, speed, direction,
@@ -307,7 +306,6 @@ async function saveMultipleBasesLocation(data) {
   try {
     const deviceId = await getOrCreateDevice(data.imei);
     
-    // استخدام أول برج للحصول على الموقع
     if (data.cellTowers && data.cellTowers.length > 0) {
       const firstTower = data.cellTowers[0];
       
@@ -321,7 +319,6 @@ async function saveMultipleBasesLocation(data) {
       );
       
       if (lbsLocation) {
-        // حفظ الموقع في قاعدة البيانات
         await client.query(`
           INSERT INTO locations (
             device_id, imei, timestamp, latitude, longitude, speed, direction,
@@ -333,10 +330,10 @@ async function saveMultipleBasesLocation(data) {
         `, [
           deviceId, data.imei, data.timestamp, 
           lbsLocation.latitude, lbsLocation.longitude,
-          0, 0, // speed, direction
-          false, 0, 0, 0, // gpsValid, satelliteCount, gsmSignal, batteryLevel
+          0, 0,
+          false, 0, 0, 0,
           data.mcc, data.mnc, firstTower.lac, firstTower.cellId,
-          0, 0, // fortificationState, workingMode
+          0, 0,
           'LBS-OpenCellID-AP02', lbsLocation.accuracy
         ]);
 
