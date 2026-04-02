@@ -1,7 +1,7 @@
 /**
  * ═══════════════════════════════════════════════════════════════
- *  GPS Watch TCP Server مع القياسات الصحية الدورية
- *  يرسل 3 أوامر قياس مع تجميع ذكي في قاعدة البيانات
+ *  GPS Watch TCP Server - النسخة النهائية
+ *  يرسل 3 أوامر قياس مع تأخير 20 ثانية لكل البيانات
  * ═══════════════════════════════════════════════════════════════
  */
 
@@ -69,7 +69,6 @@ const server = net.createServer((socket) => {
         const parsedData = ProtocolParser.parse(message);
         
         if (parsedData) {
-          // ⭐ حفظ IMEI عند تسجيل الدخول
           if (parsedData.type === 'LOGIN' && parsedData.imei) {
             socket.imei = parsedData.imei;
             console.log(`✅ تم تسجيل IMEI: ${socket.imei} للاتصال ${clientId}`);
@@ -158,7 +157,7 @@ async function sendHealthMeasurementCommands() {
     for (const device of connectedDevices) {
       console.log(`\n📤 معالجة الجهاز: ${device.imei}`);
       await sendMeasurementCommandsToDevice(device.imei, device.socket);
-      await delay(2000);
+      await delay(5000); // تأخير 5 ثواني بين الأجهزة
     }
 
     console.log('\n✅ اكتملت جولة القياسات');
@@ -173,32 +172,40 @@ async function sendHealthMeasurementCommands() {
 }
 
 /**
- * إرسال 3 أوامر قياس لجهاز واحد
- * النتائج تتجمع في row واحد في قاعدة البيانات
+ * ⭐ إرسال 3 أوامر قياس مع تأخير 20 ثانية
+ * عشان نحصل على كل البيانات: نبض + ضغط + حرارة + أكسجين
  */
 async function sendMeasurementCommandsToDevice(imei, socket) {
   try {
     console.log(`📤 إرسال أوامر القياس الشاملة لـ ${imei}`);
+    console.log(`⏰ المدة المتوقعة: ~60 ثانية للحصول على جميع البيانات\n`);
 
-    // 1. قياس الضغط والنبض (BPXY)
+    // 1️⃣ قياس الضغط والنبض (BPXY)
+    console.log(`   1/3 💉 إرسال أمر: ضغط + نبض`);
     const cmdBP = ProtocolBuilder.buildBloodPressureTestCommand(imei);
     socket.write(cmdBP);
-    console.log(`   💉 ضغط + نبض: ${cmdBP}`);
-    await delay(3000);
+    console.log(`       📤 ${cmdBP}`);
+    console.log(`       ⏳ انتظار 20 ثانية للساعة تكمل القياس...\n`);
+    await delay(20000); // 20 ثانية
 
-    // 2. قياس الحرارة (BPXT)
+    // 2️⃣ قياس الحرارة (BPXT)
+    console.log(`   2/3 🌡️  إرسال أمر: حرارة`);
     const cmdTemp = ProtocolBuilder.buildTemperatureTestCommand(imei);
     socket.write(cmdTemp);
-    console.log(`   🌡️  حرارة: ${cmdTemp}`);
-    await delay(3000);
+    console.log(`       📤 ${cmdTemp}`);
+    console.log(`       ⏳ انتظار 20 ثانية للساعة تكمل القياس...\n`);
+    await delay(20000); // 20 ثانية
 
-    // 3. قياس الأكسجين (BPXZ)
+    // 3️⃣ قياس الأكسجين (BPXZ)
+    console.log(`   3/3 🫁 إرسال أمر: أكسجين`);
     const cmdOxy = ProtocolBuilder.buildOxygenTestCommand(imei);
     socket.write(cmdOxy);
-    console.log(`   🫁 أكسجين: ${cmdOxy}`);
+    console.log(`       📤 ${cmdOxy}`);
+    console.log(`       ⏳ انتظار النتائج...\n`);
 
     logger.info(`✓ تم إرسال 3 أوامر قياس لـ ${imei}`);
-    console.log(`   ✅ تم إرسال 3 أوامر بنجاح`);
+    console.log(`   ✅ تم إرسال جميع الأوامر بنجاح`);
+    console.log(`   📊 النتائج ستظهر في قاعدة البيانات خلال 1-2 دقيقة\n`);
 
   } catch (err) {
     logger.error(`❌ خطأ في إرسال الأوامر لـ ${imei}:`, err.message);
@@ -287,7 +294,8 @@ async function startServer() {
         
         console.log(`\n🩺 تفعيل القياسات الدورية`);
         console.log(`   ⏰ الفترة: كل ${HEALTH_MONITORING_CONFIG.intervalMinutes} دقيقة`);
-        console.log(`   📊 نوع القياسات: ضغط + حرارة + أكسجين`);
+        console.log(`   📊 القياسات: ضغط + نبض + حرارة + أكسجين (3 أوامر)`);
+        console.log(`   ⏱️  التأخير بين الأوامر: 20 ثانية`);
         console.log(`   🐛 Debug Mode: ${HEALTH_MONITORING_CONFIG.debugMode}\n`);
         
         logger.info(`🩺 تفعيل القياسات الدورية (كل ${HEALTH_MONITORING_CONFIG.intervalMinutes} دقيقة)`);
@@ -348,7 +356,7 @@ function gracefulShutdown() {
   });
   
   setTimeout(() => {
-    logger.error('⚠️ فشل الإغلاق النظيف، إغلاق قسري');
+    logger.error('⚠️ فشل الإغلاق النظيح، إغلاق قسري');
     console.error('⚠️ فشل الإغلاق النظيف، إغلاق قسري');
     process.exit(1);
   }, 10000);
