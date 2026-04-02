@@ -74,33 +74,27 @@ class ProtocolParser {
 
   /**
    * تحليل رسالة الموقع (AP01)
-   * مثال: IWAP01080524A2232.9806N11404.9355E000.1061830323.8706000908000102,460,0,9520,3671,Home|74-DE-2B-44-88-8C|97#
    */
   static parseLocationPacket(message) {
     try {
-      // إزالة البادئة والنهاية
       const data = message.substring(6, message.length - 1);
       const parts = data.split(',');
 
-      // استخراج التاريخ والوقت والموقع
       const dateTimeGps = parts[0];
-      const date = dateTimeGps.substring(0, 6); // DDMMYY
+      const date = dateTimeGps.substring(0, 6);
       const gpsValid = dateTimeGps.charAt(6) === 'A';
       
-      // استخراج الإحداثيات
       const latitudeStr = dateTimeGps.substring(7, 17);
       const latitudeDir = dateTimeGps.charAt(17);
       const longitudeStr = dateTimeGps.substring(18, 29);
       const longitudeDir = dateTimeGps.charAt(29);
       const speed = parseFloat(dateTimeGps.substring(30, 35));
-      const time = dateTimeGps.substring(35, 41); // HHMMSS
+      const time = dateTimeGps.substring(35, 41);
       const direction = parseFloat(dateTimeGps.substring(41, 47));
       
-      // تحويل الإحداثيات
       const latitude = this.convertCoordinate(latitudeStr, latitudeDir);
       const longitude = this.convertCoordinate(longitudeStr, longitudeDir);
 
-      // استخراج معلومات الحالة
       const statusInfo = dateTimeGps.substring(47);
       const gsmSignal = parseInt(statusInfo.substring(0, 3));
       const satelliteCount = parseInt(statusInfo.substring(3, 6));
@@ -108,20 +102,17 @@ class ProtocolParser {
       const fortificationState = parseInt(statusInfo.substring(10, 12));
       const workingMode = parseInt(statusInfo.substring(12, 14));
 
-      // بيانات LBS
       const mcc = parseInt(parts[1]);
       const mnc = parseInt(parts[2]);
       const lac = parseInt(parts[3]);
       const cellId = parseInt(parts[4]);
 
-      // بيانات WIFI (إذا وُجِدت)
       let wifiData = [];
       if (parts.length > 5) {
         const wifiStr = parts.slice(5).join(',');
         wifiData = this.parseWifiData(wifiStr);
       }
 
-      // تركيب timestamp كامل
       const year = 2000 + parseInt(date.substring(4, 6));
       const month = parseInt(date.substring(2, 4));
       const day = parseInt(date.substring(0, 2));
@@ -134,7 +125,7 @@ class ProtocolParser {
 
       return {
         type: 'LOCATION',
-        imei: null, // سيتم تحديده من السياق
+        imei: null,
         timestamp,
         latitude,
         longitude,
@@ -160,8 +151,82 @@ class ProtocolParser {
   }
 
   /**
+   * ⭐ تحليل رسالة أبراج متعددة (AP02) - للدقة العالية!
+   * مثال: IWAP02,zh_cn,0,7,460,0,9520│3671│13,9520│3672│12,...
+   */
+  static parseMultipleBasesPacket(message) {
+    try {
+      const data = message.substring(6, message.length - 1);
+      const parts = data.split(',');
+      
+      const language = parts[0];
+      const replyFlag = parts[1];
+      const basesCount = parseInt(parts[2]);
+      const mcc = parseInt(parts[3]);
+      const mnc = parseInt(parts[4]);
+      
+      // استخراج الأبراج المتعددة
+      const cellTowers = [];
+      for (let i = 0; i < basesCount && i + 5 < parts.length; i++) {
+        const towerData = parts[5 + i].split('│');
+        if (towerData.length >= 3) {
+          cellTowers.push({
+            lac: parseInt(towerData[0]),
+            cellId: parseInt(towerData[1]),
+            signalStrength: parseInt(towerData[2])
+          });
+        }
+      }
+      
+      // استخراج شبكات WiFi
+      const wifiStartIndex = 5 + basesCount;
+      const wifiCount = parseInt(parts[wifiStartIndex] || 0);
+      const wifiNetworks = [];
+      
+      if (wifiCount > 0 && wifiStartIndex + 1 < parts.length) {
+        const wifiDataParts = parts.slice(wifiStartIndex + 1);
+        for (const wifiStr of wifiDataParts) {
+          const networks = wifiStr.split('&');
+          for (const network of networks) {
+            if (network && network.trim()) {
+              const wifiParts = network.split('│');
+              if (wifiParts.length >= 3) {
+                wifiNetworks.push({
+                  ssid: wifiParts[0],
+                  mac: wifiParts[1],
+                  signalStrength: parseInt(wifiParts[2])
+                });
+              }
+            }
+          }
+        }
+      }
+
+      logger.info(`📡 رسالة أبراج متعددة: ${basesCount} أبراج, ${wifiNetworks.length} شبكات WiFi`);
+      console.log(`📡 رسالة أبراج متعددة:`);
+      console.log(`   📡 ${cellTowers.length} أبراج`);
+      console.log(`   📶 ${wifiNetworks.length} شبكات WiFi`);
+
+      return {
+        type: 'MULTIPLE_BASES',
+        imei: null,
+        timestamp: new Date(),
+        mcc,
+        mnc,
+        cellTowers,
+        wifiNetworks,
+        language
+      };
+
+    } catch (err) {
+      logger.error('خطأ في تحليل أبراج متعددة:', err.message);
+      console.error('❌ خطأ في تحليل أبراج متعددة:', err);
+      return null;
+    }
+  }
+
+  /**
    * تحليل رسالة نبض القلب (Heartbeat - AP03)
-   * مثال: IWAP03,06000908000102,5555,30#
    */
   static parseHeartbeatPacket(message) {
     try {
@@ -201,19 +266,15 @@ class ProtocolParser {
 
   /**
    * تحليل رسالة الإنذار (AP10)
-   * مثال: IWAP10...00,zh-cn,00,WIFI_DATA#
    */
   static parseAlarmPacket(message) {
     try {
-      // مشابه لـ AP01 مع معلومات إنذار إضافية
       const locationData = this.parseLocationPacket('IWAP01' + message.substring(6));
       if (!locationData) return null;
 
-      // استخراج نوع الإنذار
       const data = message.substring(6, message.length - 1);
       const parts = data.split(',');
       
-      // نوع الإنذار في الجزء الأخير قبل اللغة
       let alertType = 'UNKNOWN';
       for (let i = parts.length - 4; i < parts.length; i++) {
         if (parts[i] === '01') alertType = 'SOS';
@@ -237,7 +298,6 @@ class ProtocolParser {
 
   /**
    * تحليل رسالة قياس النبض (AP49)
-   * مثال: IWAP49,68#
    */
   static parseHeartRatePacket(message) {
     try {
@@ -261,7 +321,6 @@ class ProtocolParser {
 
   /**
    * تحليل رسالة النبض وضغط الدم (APHT)
-   * مثال: IWAPHT,60,130,85#
    */
   static parseHeartRateBPPacket(message) {
     try {
@@ -291,7 +350,6 @@ class ProtocolParser {
 
   /**
    * تحليل رسالة القياسات الكاملة (APHP)
-   * مثال: IWAPHP,60,130,85,95,90,,,,,,,,#
    */
   static parseFullHealthPacket(message) {
     try {
@@ -325,7 +383,6 @@ class ProtocolParser {
 
   /**
    * تحليل رسالة الحرارة (AP50)
-   * مثال: IWAP50,36.7,90#
    */
   static parseTemperaturePacket(message) {
     try {
@@ -347,24 +404,6 @@ class ProtocolParser {
 
     } catch (err) {
       logger.error('خطأ في تحليل الحرارة:', err.message);
-      return null;
-    }
-  }
-
-  /**
-   * تحليل رسالة أبراج متعددة (AP02)
-   */
-  static parseMultipleBasesPacket(message) {
-    try {
-      logger.debug('📡 رسالة أبراج متعددة (AP02)');
-      return {
-        type: 'MULTIPLE_BASES',
-        imei: null,
-        timestamp: new Date(),
-        rawMessage: message,
-      };
-    } catch (err) {
-      logger.error('خطأ في تحليل أبراج متعددة:', err.message);
       return null;
     }
   }
@@ -397,13 +436,13 @@ class ProtocolParser {
       
       const networks = wifiStr.split('&');
       return networks.map(network => {
-        const parts = network.split('|');
+        const parts = network.split('│');
         return {
           ssid: parts[0],
           mac: parts[1],
           signal: parseInt(parts[2]),
         };
-      });
+      }).filter(n => n.ssid && n.mac);
     } catch {
       return [];
     }
