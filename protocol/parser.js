@@ -1,31 +1,25 @@
 const logger = require('../utils/logger');
 
 /**
- * محلل بروتوكول ساعة GPS
- * يفك تشفير جميع أنواع الرسائل القادمة من الساعة
+ * محلل بروتوكول ساعة GPS - مع دعم محسّن لـ AP02
  */
 
 class ProtocolParser {
   
   /**
    * تحليل الرسالة الواردة
-   * @param {string} message - الرسالة الكاملة
-   * @returns {object|null} - البيانات المستخرجة
    */
   static parse(message) {
     try {
       message = message.trim();
       
-      // التحقق من البنية الأساسية
       if (!message.startsWith('IW') || !message.endsWith('#')) {
         logger.warn('رسالة غير صحيحة (لا تبدأ بـ IW أو لا تنتهي بـ #)');
         return null;
       }
 
-      // استخراج نوع الأمر
       const commandType = message.substring(2, 6);
       
-      // اختيار المحلل المناسب حسب نوع الأمر
       switch (commandType) {
         case 'AP00':
           return this.parseLoginPacket(message);
@@ -45,6 +39,11 @@ class ProtocolParser {
           return this.parseFullHealthPacket(message);
         case 'AP50':
           return this.parseTemperaturePacket(message);
+        case 'APXY':
+        case 'APXL':
+        case 'APXT':
+        case 'APXZ':
+          return this.parseCommandAcknowledge(message, commandType);
         default:
           logger.warn(`نوع أمر غير معروف: ${commandType}`);
           return { type: 'UNKNOWN', commandType, rawMessage: message };
@@ -58,18 +57,104 @@ class ProtocolParser {
 
   /**
    * تحليل رسالة تسجيل الدخول (AP00)
-   * مثال: IWAP00353456789012345#
    */
   static parseLoginPacket(message) {
     const imei = message.substring(6, 21);
-    
     logger.info(`📱 رسالة تسجيل دخول من IMEI: ${imei}`);
-    
     return {
       type: 'LOGIN',
       imei,
       timestamp: new Date(),
     };
+  }
+
+  /**
+   * ⭐ تحليل رسالة أبراج متعددة (AP02) - محسّن
+   * مثال: IWAP02,zh_cn,0,1,416,3,34102|36238101|27,1,a|48-12-8f-35-c0-ec|76#
+   */
+  static parseMultipleBasesPacket(message) {
+    try {
+      // إزالة البادئة والنهاية
+      const data = message.substring(6, message.length - 1);
+      const parts = data.split(',');
+
+      logger.debug(`🔍 تحليل AP02: ${data}`);
+
+      const language = parts[0]; // zh_cn
+      const replyFlag = parts[1]; // 0
+      const cellTowerCount = parseInt(parts[2]); // عدد الأبراج
+      
+      let currentIndex = 3;
+      
+      // استخراج MCC و MNC
+      const mcc = parseInt(parts[currentIndex++]);
+      const mnc = parseInt(parts[currentIndex++]);
+      
+      // استخراج الأبراج
+      const cellTowers = [];
+      for (let i = 0; i < cellTowerCount; i++) {
+        if (currentIndex >= parts.length) break;
+        
+        const towerData = parts[currentIndex++];
+        const towerParts = towerData.split('|');
+        
+        if (towerParts.length >= 3) {
+          cellTowers.push({
+            lac: parseInt(towerParts[0]),
+            cellId: parseInt(towerParts[1]),
+            signal: parseInt(towerParts[2]),
+          });
+        }
+      }
+      
+      // استخراج عدد الـ WiFi
+      const wifiCount = currentIndex < parts.length ? parseInt(parts[currentIndex++]) : 0;
+      
+      // استخراج شبكات WiFi
+      const wifiNetworks = [];
+      for (let i = 0; i < wifiCount; i++) {
+        if (currentIndex >= parts.length) break;
+        
+        const wifiData = parts[currentIndex++];
+        const wifiParts = wifiData.split('|');
+        
+        if (wifiParts.length >= 3) {
+          wifiNetworks.push({
+            ssid: wifiParts[0],
+            mac: wifiParts[1],
+            signal: parseInt(wifiParts[2]),
+          });
+        }
+      }
+
+      logger.info(`📡 رسالة أبراج متعددة:`);
+      logger.info(`   📡 ${cellTowers.length} أبراج`);
+      logger.info(`   📶 ${wifiNetworks.length} شبكات WiFi`);
+      
+      if (cellTowers.length > 0) {
+        logger.info(`   🗼 البرج الأول: LAC=${cellTowers[0].lac}, CellID=${cellTowers[0].cellId}, Signal=${cellTowers[0].signal}`);
+      }
+      
+      if (wifiNetworks.length > 0) {
+        logger.info(`   📶 WiFi الأول: SSID="${wifiNetworks[0].ssid}", MAC=${wifiNetworks[0].mac}, Signal=${wifiNetworks[0].signal}`);
+      }
+
+      return {
+        type: 'MULTIPLE_BASES',
+        imei: null, // سيتم تحديده من السياق
+        timestamp: new Date(),
+        mcc,
+        mnc,
+        cellTowers,
+        wifiNetworks,
+        language,
+      };
+
+    } catch (err) {
+      logger.error('خطأ في تحليل AP02:', err.message);
+      logger.error('الرسالة:', message);
+      return null;
+    }
   }
 
   /**
@@ -151,82 +236,7 @@ class ProtocolParser {
   }
 
   /**
-   * ⭐ تحليل رسالة أبراج متعددة (AP02) - للدقة العالية!
-   * مثال: IWAP02,zh_cn,0,7,460,0,9520│3671│13,9520│3672│12,...
-   */
-  static parseMultipleBasesPacket(message) {
-    try {
-      const data = message.substring(6, message.length - 1);
-      const parts = data.split(',');
-      
-      const language = parts[0];
-      const replyFlag = parts[1];
-      const basesCount = parseInt(parts[2]);
-      const mcc = parseInt(parts[3]);
-      const mnc = parseInt(parts[4]);
-      
-      // استخراج الأبراج المتعددة
-      const cellTowers = [];
-      for (let i = 0; i < basesCount && i + 5 < parts.length; i++) {
-        const towerData = parts[5 + i].split('│');
-        if (towerData.length >= 3) {
-          cellTowers.push({
-            lac: parseInt(towerData[0]),
-            cellId: parseInt(towerData[1]),
-            signalStrength: parseInt(towerData[2])
-          });
-        }
-      }
-      
-      // استخراج شبكات WiFi
-      const wifiStartIndex = 5 + basesCount;
-      const wifiCount = parseInt(parts[wifiStartIndex] || 0);
-      const wifiNetworks = [];
-      
-      if (wifiCount > 0 && wifiStartIndex + 1 < parts.length) {
-        const wifiDataParts = parts.slice(wifiStartIndex + 1);
-        for (const wifiStr of wifiDataParts) {
-          const networks = wifiStr.split('&');
-          for (const network of networks) {
-            if (network && network.trim()) {
-              const wifiParts = network.split('│');
-              if (wifiParts.length >= 3) {
-                wifiNetworks.push({
-                  ssid: wifiParts[0],
-                  mac: wifiParts[1],
-                  signalStrength: parseInt(wifiParts[2])
-                });
-              }
-            }
-          }
-        }
-      }
-
-      logger.info(`📡 رسالة أبراج متعددة: ${basesCount} أبراج, ${wifiNetworks.length} شبكات WiFi`);
-      console.log(`📡 رسالة أبراج متعددة:`);
-      console.log(`   📡 ${cellTowers.length} أبراج`);
-      console.log(`   📶 ${wifiNetworks.length} شبكات WiFi`);
-
-      return {
-        type: 'MULTIPLE_BASES',
-        imei: null,
-        timestamp: new Date(),
-        mcc,
-        mnc,
-        cellTowers,
-        wifiNetworks,
-        language
-      };
-
-    } catch (err) {
-      logger.error('خطأ في تحليل أبراج متعددة:', err.message);
-      console.error('❌ خطأ في تحليل أبراج متعددة:', err);
-      return null;
-    }
-  }
-
-  /**
-   * تحليل رسالة نبض القلب (Heartbeat - AP03)
+   * تحليل Heartbeat (AP03)
    */
   static parseHeartbeatPacket(message) {
     try {
@@ -259,13 +269,13 @@ class ProtocolParser {
       };
 
     } catch (err) {
-      logger.error('خطأ في تحليل رسالة Heartbeat:', err.message);
+      logger.error('خطأ في تحليل Heartbeat:', err.message);
       return null;
     }
   }
 
   /**
-   * تحليل رسالة الإنذار (AP10)
+   * تحليل الإنذار (AP10)
    */
   static parseAlarmPacket(message) {
     try {
@@ -291,13 +301,13 @@ class ProtocolParser {
       };
 
     } catch (err) {
-      logger.error('خطأ في تحليل رسالة الإنذار:', err.message);
+      logger.error('خطأ في تحليل الإنذار:', err.message);
       return null;
     }
   }
 
   /**
-   * تحليل رسالة قياس النبض (AP49)
+   * تحليل قياس النبض (AP49)
    */
   static parseHeartRatePacket(message) {
     try {
@@ -314,22 +324,22 @@ class ProtocolParser {
       };
 
     } catch (err) {
-      logger.error('خطأ في تحليل قياس النبض:', err.message);
+      logger.error('خطأ في تحليل النبض:', err.message);
       return null;
     }
   }
 
   /**
-   * تحليل رسالة النبض وضغط الدم (APHT)
+   * تحليل النبض وضغط الدم (APHT)
    */
   static parseHeartRateBPPacket(message) {
     try {
       const data = message.substring(6, message.length - 1);
       const parts = data.split(',');
 
-      const heartRate = parseInt(parts[1]);
-      const systolic = parseInt(parts[2]);
-      const diastolic = parseInt(parts[3]);
+      const heartRate = parseInt(parts[0]);
+      const systolic = parseInt(parts[1]);
+      const diastolic = parseInt(parts[2]);
 
       logger.info(`💉 نبض وضغط: ${heartRate} bpm | ${systolic}/${diastolic} mmHg`);
 
@@ -349,18 +359,18 @@ class ProtocolParser {
   }
 
   /**
-   * تحليل رسالة القياسات الكاملة (APHP)
+   * تحليل القياسات الكاملة (APHP)
    */
   static parseFullHealthPacket(message) {
     try {
       const data = message.substring(6, message.length - 1);
       const parts = data.split(',');
 
-      const heartRate = parts[1] ? parseInt(parts[1]) : null;
-      const systolic = parts[2] ? parseInt(parts[2]) : null;
-      const diastolic = parts[3] ? parseInt(parts[3]) : null;
-      const spo2 = parts[4] ? parseInt(parts[4]) : null;
-      const bloodSugar = parts[5] ? parseInt(parts[5]) : null;
+      const heartRate = parts[0] ? parseInt(parts[0]) : null;
+      const systolic = parts[1] ? parseInt(parts[1]) : null;
+      const diastolic = parts[2] ? parseInt(parts[2]) : null;
+      const spo2 = parts[3] ? parseInt(parts[3]) : null;
+      const bloodSugar = parts[4] ? parseInt(parts[4]) : null;
 
       logger.info(`📊 قياسات كاملة: نبض ${heartRate} | ضغط ${systolic}/${diastolic} | أكسجين ${spo2}%`);
 
@@ -382,15 +392,15 @@ class ProtocolParser {
   }
 
   /**
-   * تحليل رسالة الحرارة (AP50)
+   * تحليل الحرارة (AP50)
    */
   static parseTemperaturePacket(message) {
     try {
       const data = message.substring(6, message.length - 1);
       const parts = data.split(',');
 
-      const temperature = parseFloat(parts[1]);
-      const batteryLevel = parseInt(parts[2]);
+      const temperature = parseFloat(parts[0]);
+      const batteryLevel = parseInt(parts[1]);
 
       logger.info(`🌡️ حرارة الجسم: ${temperature}°C | بطارية: ${batteryLevel}%`);
 
@@ -409,10 +419,27 @@ class ProtocolParser {
   }
 
   /**
+   * تحليل رد الأمر (APXY, APXL, APXT, APXZ)
+   */
+  static parseCommandAcknowledge(message, commandType) {
+    try {
+      logger.debug(`✅ تأكيد استلام أمر: ${commandType}`);
+      return {
+        type: 'COMMAND_ACK',
+        commandType,
+        imei: null,
+        timestamp: new Date(),
+      };
+    } catch (err) {
+      logger.error('خطأ في تحليل رد الأمر:', err.message);
+      return null;
+    }
+  }
+
+  /**
    * دوال مساعدة
    */
 
-  // تحويل إحداثيات GPS من صيغة NMEA إلى Decimal
   static convertCoordinate(coord, direction) {
     try {
       const degrees = parseInt(coord.substring(0, coord.indexOf('.') - 2));
@@ -429,20 +456,19 @@ class ProtocolParser {
     }
   }
 
-  // تحليل بيانات WIFI
   static parseWifiData(wifiStr) {
     try {
       if (!wifiStr || wifiStr.trim() === '') return [];
       
       const networks = wifiStr.split('&');
       return networks.map(network => {
-        const parts = network.split('│');
+        const parts = network.split('|');
         return {
           ssid: parts[0],
           mac: parts[1],
           signal: parseInt(parts[2]),
         };
-      }).filter(n => n.ssid && n.mac);
+      });
     } catch {
       return [];
     }
