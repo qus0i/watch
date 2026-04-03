@@ -47,10 +47,22 @@ class MessageHandlers {
     
     // طلب موقع فوري
     setTimeout(() => {
-      const locationRequest = ProtocolBuilder.buildLocationRequest(imei);
-      socket.write(locationRequest);
-      console.log(`📍 طلب موقع من ${imei}`);
+      if (socket && !socket.destroyed) {
+        const locationRequest = ProtocolBuilder.buildLocationRequest(imei);
+        socket.write(locationRequest);
+        console.log(`📍 طلب موقع من ${imei}`);
+      }
     }, 2000);
+    
+    // تعطيل حساس NOT_WEAR
+    setTimeout(() => {
+      if (socket && !socket.destroyed) {
+        const journalNo = this.generateJournalNo();
+        const notWearCmd = `IWBP84,${imei},${journalNo},0#`;
+        socket.write(notWearCmd);
+        console.log(`🔕 تعطيل حساس خلع الساعة`);
+      }
+    }, 4000);
     
     // دورة قياسات كل 5 دقائق
     const measurementCycle = setInterval(() => {
@@ -64,43 +76,66 @@ class MessageHandlers {
       
       // 1. نبض
       setTimeout(() => {
-        const hrCmd = ProtocolBuilder.buildHeartRateTestCommand(imei);
-        socket.write(hrCmd);
-        console.log(`❤️ طلب قياس نبض`);
+        if (socket && !socket.destroyed) {
+          const hrCmd = ProtocolBuilder.buildHeartRateTestCommand(imei);
+          socket.write(hrCmd);
+          console.log(`❤️ طلب قياس نبض`);
+        }
       }, 1000);
       
       // 2. ضغط
       setTimeout(() => {
-        const bpCmd = ProtocolBuilder.buildBloodPressureTestCommand(imei);
-        socket.write(bpCmd);
-        console.log(`💉 طلب قياس ضغط`);
+        if (socket && !socket.destroyed) {
+          const bpCmd = ProtocolBuilder.buildBloodPressureTestCommand(imei);
+          socket.write(bpCmd);
+          console.log(`💉 طلب قياس ضغط`);
+        }
       }, 3000);
       
       // 3. حرارة
       setTimeout(() => {
-        const tempCmd = ProtocolBuilder.buildTemperatureTestCommand(imei);
-        socket.write(tempCmd);
-        console.log(`🌡️ طلب قياس حرارة`);
+        if (socket && !socket.destroyed) {
+          const tempCmd = ProtocolBuilder.buildTemperatureTestCommand(imei);
+          socket.write(tempCmd);
+          console.log(`🌡️ طلب قياس حرارة`);
+        }
       }, 5000);
       
       // 4. أكسجين
       setTimeout(() => {
-        const spo2Cmd = ProtocolBuilder.buildOxygenTestCommand(imei);
-        socket.write(spo2Cmd);
-        console.log(`🫁 طلب قياس أكسجين`);
+        if (socket && !socket.destroyed) {
+          const spo2Cmd = ProtocolBuilder.buildOxygenTestCommand(imei);
+          socket.write(spo2Cmd);
+          console.log(`🫁 طلب قياس أكسجين`);
+        }
       }, 7000);
       
       // 5. موقع
       setTimeout(() => {
-        const locCmd = ProtocolBuilder.buildLocationRequest(imei);
-        socket.write(locCmd);
-        console.log(`📍 طلب موقع`);
+        if (socket && !socket.destroyed) {
+          const locCmd = ProtocolBuilder.buildLocationRequest(imei);
+          socket.write(locCmd);
+          console.log(`📍 طلب موقع`);
+        }
       }, 9000);
       
     }, 5 * 60 * 1000); // كل 5 دقائق
     
     // حفظ reference للـ interval
     socket.measurementCycle = measurementCycle;
+  }
+
+  /**
+   * توليد Journal Number
+   */
+  static generateJournalNo() {
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hour = String(now.getHours()).padStart(2, '0');
+    const minute = String(now.getMinutes()).padStart(2, '0');
+    const second = String(now.getSeconds()).padStart(2, '0');
+    return `${month}${day}${hour}${minute}${second}`;
   }
 
   /**
@@ -358,49 +393,77 @@ class MessageHandlers {
       
       if (!data.imei) {
         console.log('⚠️ بيانات LBS بدون IMEI');
+        const response = ProtocolBuilder.buildMultipleBasesResponse();
+        socket.write(response);
         return;
       }
 
       console.log(`\n📡 استقبال موقع LBS (تقريبي) من ${data.imei}`);
       
-      // تحليل البيانات
-      const rawData = data.rawMessage.substring(6, data.rawMessage.length - 1);
+      // الرسالة: IWAP02,zh_cn,0,1,416,3,34102|13256381|18,1,a|48-12-8f-35-c0-ec|74#
+      const fullMessage = data.rawMessage;
+      console.log(`   📨 الرسالة الكاملة: ${fullMessage}`);
+      
+      // إزالة IW من البداية و # من النهاية
+      // substring(6) يزيل "IWAP02" لكن يترك الفاصلة الأولى
+      const rawData = fullMessage.substring(6, fullMessage.length - 1);
+      console.log(`   📦 البيانات: ${rawData}`);
+      
+      // split بالفاصلة
       const parts = rawData.split(',');
+      console.log(`   🔢 عدد الأجزاء: ${parts.length}`);
       
-      console.log(`   البيانات: ${rawData}`);
+      // parts[0] = "" (فارغ بسبب الفاصلة الأولى)
+      // parts[1] = "zh_cn"
+      // parts[2] = "0"
+      // parts[3] = "1"
+      // parts[4] = "416" ← MCC هنا!
+      // parts[5] = "3"   ← MNC هنا!
+      // parts[6] = "34102|13256381|18" ← LBS هنا!
+      // parts[7] = "1"
+      // parts[8] = "a|48-12-8f-35-c0-ec|74"
       
-      if (parts.length >= 5) {
-        const mcc = parseInt(parts[3]);
-        const mnc = parseInt(parts[4]);
-        const lbsData = parts[5] || ''; // مثلاً: 34102|36238101|28
+      if (parts.length >= 7) {
+        const mcc = parseInt(parts[4]);      // MCC في الموضع 4
+        const mnc = parseInt(parts[5]);      // MNC في الموضع 5
+        const lbsData = parts[6] || '';      // LBS في الموضع 6
         
-        console.log(`   MCC: ${mcc} (الأردن)`);
-        console.log(`   MNC: ${mnc} (أمنية)`);
-        console.log(`   LBS: ${lbsData}`);
+        console.log(`   🌍 MCC: ${mcc} (${mcc === 416 ? 'الأردن' : 'غير معروف'})`);
+        console.log(`   📱 MNC: ${mnc} (${mnc === 3 ? 'أمنية' : mnc === 77 ? 'زين' : mnc === 1 ? 'أورانج' : 'غير معروف'})`);
+        console.log(`   📡 LBS Data: ${lbsData}`);
         
-        // استخراج LAC و CID
+        // تحليل LAC|CID|signal
         let lac = 0;
         let cellId = 0;
+        let signalStrength = 0;
         
         if (lbsData && lbsData.includes('|')) {
           const lbsParts = lbsData.split('|');
           lac = parseInt(lbsParts[0]) || 0;
           cellId = parseInt(lbsParts[1]) || 0;
+          signalStrength = parseInt(lbsParts[2]) || 0;
+          
+          console.log(`   📍 LAC: ${lac}`);
+          console.log(`   🗼 Cell ID: ${cellId}`);
+          console.log(`   📶 Signal: ${signalStrength} dBm`);
         }
         
-        console.log(`   LAC: ${lac}, Cell ID: ${cellId}`);
+        // WiFi (إن وجد)
+        if (parts.length >= 9 && parts[8]) {
+          console.log(`   📶 WiFi: ${parts[8]}`);
+        }
         
-        // حفظ كموقع تقريبي
+        // حفظ في قاعدة البيانات
         const saved = await db.saveLocation({
           imei: data.imei,
           timestamp: new Date(),
-          latitude: 0, // سنحسبها لاحقاً من OpenCellID API
+          latitude: 0,
           longitude: 0,
           speed: 0,
           direction: 0,
-          gpsValid: false, // ليس GPS حقيقي - موقع تقريبي
+          gpsValid: false,
           satelliteCount: 0,
-          gsmSignal: 50,
+          gsmSignal: Math.abs(signalStrength),
           batteryLevel: 0,
           mcc,
           mnc,
@@ -412,10 +475,13 @@ class MessageHandlers {
         });
         
         if (saved) {
-          console.log(`✅ تم حفظ موقع LBS (تقريبي) بنجاح`);
+          console.log(`✅ تم حفظ موقع LBS بنجاح`);
+          console.log(`   📊 MCC:${mcc}, MNC:${mnc}, LAC:${lac}, CID:${cellId}`);
         } else {
           console.log(`❌ فشل حفظ موقع LBS`);
         }
+      } else {
+        console.log(`⚠️ بيانات غير كاملة - ${parts.length} أجزاء فقط`);
       }
       
       // إرسال الرد
@@ -423,8 +489,8 @@ class MessageHandlers {
       socket.write(response);
       
     } catch (err) {
-      logger.error('خطأ في معالجة أبراج متعددة:', err.message);
-      console.error('❌ خطأ في معالجة LBS:', err);
+      logger.error('خطأ في معالجة LBS:', err.message);
+      console.error('❌ خطأ LBS:', err);
     }
   }
 
