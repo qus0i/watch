@@ -51,9 +51,10 @@ module.exports = {
       location: process.env.REQUEST_LOCATION !== 'false',           // طلب الموقع (true افتراضياً)
     },
     
-    // التأخير بين كل أمر قياس (بالثواني)
-    // هذا مهم لتجنب إرهاق الساعة بأوامر متتالية
-    delayBetweenCommands: parseInt(process.env.DELAY_BETWEEN_COMMANDS) || 2,
+    // ⭐ التأخير بين كل أمر قياس (بالثواني)
+    // ⚠️ IMPORTANT: القياسات الطبية تاخذ 30-60 ثانية لإتمامها!
+    // لو التأخير قصير → الساعة ترسل 0,0,0 (قياسات غير مكتملة)
+    delayBetweenCommands: parseInt(process.env.DELAY_BETWEEN_COMMANDS) || 60,
   },
 
   // ⭐ إعدادات خدمات تحديد الموقع (جديد)
