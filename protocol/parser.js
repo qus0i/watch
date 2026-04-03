@@ -44,6 +44,10 @@ class ProtocolParser {
           return this.parseHeartbeatPacket(message);
         case 'AP10':
           return this.parseAlarmPacket(message);
+        case 'AP16':
+          return this.parseLocationRequestAck(message);
+        case 'AP12':
+          return this.parseSOSAck(message);
         case 'AP49':
           return this.parseHeartRatePacket(message);
         case 'APHT':
@@ -52,6 +56,14 @@ class ProtocolParser {
           return this.parseFullHealthPacket(message);
         case 'AP50':
           return this.parseTemperaturePacket(message);
+        case 'APXL':
+          return this.parseHeartRateAck(message);
+        case 'APXY':
+          return this.parseBloodPressureAck(message);
+        case 'APXT':
+          return this.parseTemperatureAck(message);
+        case 'APXZ':
+          return this.parseOxygenAck(message);
         default:
           logger.warn(`نوع أمر غير معروف: ${commandType}`);
           console.log(`⚠️ نوع أمر غير معروف: ${commandType}`);
@@ -398,6 +410,110 @@ class ProtocolParser {
       };
     } catch (err) {
       logger.error('خطأ في تحليل أبراج متعددة:', err.message);
+      return null;
+    }
+  }
+
+  /**
+   * تحليل رد على طلب موقع (AP16)
+   * مثال: IWAP16,080835#
+   */
+  static parseLocationRequestAck(message) {
+    try {
+      const data = message.substring(6, message.length - 1);
+      const journalNo = data.split(',')[1] || data;
+
+      console.log(`✅ الساعة استلمت طلب الموقع - Journal: ${journalNo}`);
+      logger.info(`✅ تأكيد طلب موقع - Journal: ${journalNo}`);
+
+      return {
+        type: 'LOCATION_REQUEST_ACK',
+        imei: null,
+        timestamp: new Date(),
+        journalNo,
+      };
+    } catch (err) {
+      logger.error('خطأ في تحليل رد طلب الموقع:', err.message);
+      return null;
+    }
+  }
+
+  /**
+   * تحليل رد ضبط SOS (AP12)
+   */
+  static parseSOSAck(message) {
+    try {
+      console.log(`✅ الساعة استلمت أمر SOS`);
+      return {
+        type: 'SOS_ACK',
+        imei: null,
+        timestamp: new Date(),
+      };
+    } catch (err) {
+      return null;
+    }
+  }
+
+  /**
+   * تحليل رد على طلب قياس نبض (APXL)
+   */
+  static parseHeartRateAck(message) {
+    try {
+      console.log(`✅ الساعة بدأت قياس النبض`);
+      return {
+        type: 'HEART_RATE_TEST_ACK',
+        imei: null,
+        timestamp: new Date(),
+      };
+    } catch (err) {
+      return null;
+    }
+  }
+
+  /**
+   * تحليل رد على طلب قياس ضغط (APXY)
+   */
+  static parseBloodPressureAck(message) {
+    try {
+      console.log(`✅ الساعة بدأت قياس الضغط`);
+      return {
+        type: 'BLOOD_PRESSURE_TEST_ACK',
+        imei: null,
+        timestamp: new Date(),
+      };
+    } catch (err) {
+      return null;
+    }
+  }
+
+  /**
+   * تحليل رد على طلب قياس حرارة (APXT)
+   */
+  static parseTemperatureAck(message) {
+    try {
+      console.log(`✅ الساعة بدأت قياس الحرارة`);
+      return {
+        type: 'TEMPERATURE_TEST_ACK',
+        imei: null,
+        timestamp: new Date(),
+      };
+    } catch (err) {
+      return null;
+    }
+  }
+
+  /**
+   * تحليل رد على طلب قياس أكسجين (APXZ)
+   */
+  static parseOxygenAck(message) {
+    try {
+      console.log(`✅ الساعة بدأت قياس الأكسجين`);
+      return {
+        type: 'OXYGEN_TEST_ACK',
+        imei: null,
+        timestamp: new Date(),
+      };
+    } catch (err) {
       return null;
     }
   }
