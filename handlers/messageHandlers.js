@@ -230,3 +230,133 @@ class MessageHandlers {
       console.log(`   ضغط: ${data.systolic}/${data.diastolic} mmHg`);
       console.log(`   أكسجين: ${data.spo2}%`);
       console.log(`   سكر: ${data.bloodSugar}`);
+
+      const saved = await db.saveHealthData({
+        imei: data.imei,
+        heartRate: data.heartRate,
+        systolic: data.systolic,
+        diastolic: data.diastolic,
+        spo2: data.spo2,
+        bloodSugar: data.bloodSugar,
+      });
+      
+      if (saved) {
+        console.log(`✅ تم حفظ القياسات الكاملة بنجاح`);
+      } else {
+        console.log(`❌ فشل حفظ القياسات الكاملة`);
+      }
+      
+      const response = ProtocolBuilder.buildFullHealthResponse();
+      socket.write(response);
+      
+    } catch (err) {
+      logger.error('خطأ في معالجة القياسات الكاملة:', err.message);
+      console.error('❌ خطأ في معالجة القياسات الكاملة:', err);
+    }
+  }
+
+  /**
+   * معالجة رسالة الحرارة
+   */
+  static async handleTemperature(data, socket) {
+    try {
+      data.imei = socket.imei;
+      
+      if (!data.imei) return;
+
+      console.log(`\n🌡️ استقبال حرارة الجسم:`);
+      console.log(`   IMEI: ${data.imei}`);
+      console.log(`   الحرارة: ${data.temperature}°C`);
+      console.log(`   البطارية: ${data.batteryLevel}%`);
+
+      const saved = await db.saveHealthData({
+        imei: data.imei,
+        temperature: data.temperature,
+        batteryLevel: data.batteryLevel,
+      });
+      
+      if (saved) {
+        console.log(`✅ تم حفظ الحرارة بنجاح`);
+      } else {
+        console.log(`❌ فشل حفظ الحرارة`);
+      }
+      
+      const response = ProtocolBuilder.buildTemperatureResponse();
+      socket.write(response);
+      
+    } catch (err) {
+      logger.error('خطأ في معالجة الحرارة:', err.message);
+      console.error('❌ خطأ في معالجة الحرارة:', err);
+    }
+  }
+
+  /**
+   * معالجة رسالة أبراج متعددة
+   */
+  static async handleMultipleBases(data, socket) {
+    try {
+      // مجرد رد بسيط
+      const response = ProtocolBuilder.buildMultipleBasesResponse();
+      socket.write(response);
+      
+    } catch (err) {
+      logger.error('خطأ في معالجة أبراج متعددة:', err.message);
+    }
+  }
+
+  /**
+   * توجيه الرسالة للمعالج المناسب
+   */
+  static async route(parsedData, socket) {
+    if (!parsedData) return;
+
+    try {
+      switch (parsedData.type) {
+        case 'LOGIN':
+          await this.handleLogin(parsedData, socket);
+          break;
+        case 'LOCATION':
+          await this.handleLocation(parsedData, socket);
+          break;
+        case 'HEARTBEAT':
+          await this.handleHeartbeat(parsedData, socket);
+          break;
+        case 'ALARM':
+          await this.handleAlarm(parsedData, socket);
+          break;
+        case 'HEART_RATE':
+          await this.handleHeartRate(parsedData, socket);
+          break;
+        case 'HEART_RATE_BP':
+          await this.handleHeartRateBP(parsedData, socket);
+          break;
+        case 'FULL_HEALTH':
+          await this.handleFullHealth(parsedData, socket);
+          break;
+        case 'TEMPERATURE':
+          await this.handleTemperature(parsedData, socket);
+          break;
+        case 'MULTIPLE_BASES':
+          await this.handleMultipleBases(parsedData, socket);
+          break;
+        case 'LOCATION_REQUEST_ACK':
+        case 'SOS_ACK':
+        case 'HEART_RATE_TEST_ACK':
+        case 'BLOOD_PRESSURE_TEST_ACK':
+        case 'TEMPERATURE_TEST_ACK':
+        case 'OXYGEN_TEST_ACK':
+          // مجرد تأكيدات، لا حاجة لحفظها
+          console.log(`✅ تأكيد استلام: ${parsedData.type}`);
+          break;
+        default:
+          logger.warn(`نوع رسالة غير معالج: ${parsedData.type}`);
+          console.log(`⚠️ نوع رسالة غير معالج: ${parsedData.type}`);
+      }
+    } catch (err) {
+      logger.error('خطأ في توجيه الرسالة:', err.message);
+      console.error('❌ خطأ في توجيه الرسالة:', err);
+    }
+  }
+}
+
+module.exports = MessageHandlers;
