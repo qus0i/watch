@@ -3,8 +3,9 @@ const config = require('../config');
 const ProtocolBuilder = require('../protocol/builder');
 
 /**
- * نظام جدولة القياسات الصحية الدورية
- * يرسل أوامر القياس لجميع الساعات المتصلة حسب الفترة المحددة
+ * نظام القياسات الصحية الدورية المبسّط
+ * كل 5 دقائق: Location + ضغط + حرارة + أكسجين
+ * التخزين: فوري (كل قياس يتحفظ مباشرة)
  */
 
 class HealthScheduler {
@@ -17,8 +18,6 @@ class HealthScheduler {
 
   /**
    * بدء نظام الجدولة
-   * @param {Function} sendCommandCallback - دالة إرسال الأمر للجهاز
-   * @param {Function} getConnectedDevicesCallback - دالة الحصول على الأجهزة المتصلة
    */
   start(sendCommandCallback, getConnectedDevicesCallback) {
     if (this.isRunning) {
@@ -33,13 +32,17 @@ class HealthScheduler {
 
     const intervalMs = config.healthMonitoring.intervalMinutes * 60 * 1000;
     
-    logger.info(`🩺 بدء نظام القياسات الصحية الدورية (كل ${config.healthMonitoring.intervalMinutes} دقيقة)`);
+    logger.info(`\n═══════════════════════════════════════════════════════`);
+    logger.info(`🩺 بدء نظام القياسات الصحية الدورية`);
+    logger.info(`   ⏰ الفترة: كل ${config.healthMonitoring.intervalMinutes} دقيقة`);
     logger.info(`   📊 القياسات المفعلة:`);
     if (config.healthMonitoring.measurements.location) logger.info('      📍 الموقع (GPS)');
-    if (config.healthMonitoring.measurements.heartRate) logger.info('      ❤️  النبض');
-    if (config.healthMonitoring.measurements.bloodPressure) logger.info('      💉 ضغط الدم');
-    if (config.healthMonitoring.measurements.temperature) logger.info('      🌡️  الحرارة');
-    if (config.healthMonitoring.measurements.bloodOxygen) logger.info('      🫁 الأكسجين');
+    if (config.healthMonitoring.measurements.bloodPressure) logger.info('      💉 ضغط الدم + النبض');
+    if (config.healthMonitoring.measurements.temperature) logger.info('      🌡️  حرارة الجسم');
+    if (config.healthMonitoring.measurements.bloodOxygen) logger.info('      🫁 الأكسجين (SPO2)');
+    logger.info(`   💾 التخزين: فوري (كل قياس يُحفظ مباشرة)`);
+    logger.info(`   ⏱️  التأخير بين القياسات: ${config.healthMonitoring.delayBetweenCommands} ثانية`);
+    logger.info(`═══════════════════════════════════════════════════════\n`);
 
     this.sendCommandCallback = sendCommandCallback;
     this.getConnectedDevicesCallback = getConnectedDevicesCallback;
@@ -67,122 +70,112 @@ class HealthScheduler {
   }
 
   /**
-   * تنفيذ القياسات على جميع الأجهزة المتصلة
+   * تنفيذ جولة قياسات كاملة
    */
   async runMeasurements() {
     try {
       const devices = this.getConnectedDevicesCallback();
       
       if (!devices || devices.length === 0) {
-        logger.debug('لا توجد أجهزة متصلة حالياً للقياس');
+        logger.debug('⚠️ لا توجد أجهزة متصلة للقياس');
         return;
       }
 
       this.lastRunTime = new Date();
       this.measurementCount++;
 
-      logger.info(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-      logger.info(`🩺 بدء جولة القياسات #${this.measurementCount}`);
-      logger.info(`   📱 عدد الأجهزة: ${devices.length}`);
-      logger.info(`   ⏰ الوقت: ${this.lastRunTime.toLocaleString('ar-JO')}`);
-      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
+      logger.info(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+      logger.info(`🩺 جولة قياسات #${this.measurementCount} - ${this.lastRunTime.toLocaleString('ar-JO')}`);
+      logger.info(`   📱 عدد الأجهزة المتصلة: ${devices.length}`);
+      logger.info(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
       // إرسال الأوامر لكل جهاز
       for (const device of devices) {
         if (!device.imei) continue;
         
-        await this.sendMeasurementCommands(device.imei);
+        logger.info(`📤 بدء القياسات للجهاز: ${device.imei}`);
+        await this.sendAllMeasurements(device.imei);
         
-        // تأخير قصير بين الأجهزة لتجنب الازدحام
-        await this.delay(1000);
+        // تأخير بين الأجهزة (لو في أكثر من جهاز)
+        if (devices.length > 1) {
+          await this.delay(5000);
+        }
       }
 
-      logger.info(`✅ اكتملت جولة القياسات #${this.measurementCount}\n`);
+      logger.info(`\n✅ اكتملت جولة القياسات #${this.measurementCount}\n`);
 
     } catch (err) {
-      logger.error('خطأ في تنفيذ القياسات الدورية:', err.message);
+      logger.error('❌ خطأ في تنفيذ القياسات الدورية:', err.message);
     }
   }
 
   /**
-   * إرسال أوامر القياس لجهاز معين
-   * @param {string} imei - رقم IMEI للجهاز
+   * إرسال جميع القياسات لجهاز واحد
    */
-  async sendMeasurementCommands(imei) {
+  async sendAllMeasurements(imei) {
     try {
-      logger.debug(`📤 إرسال أوامر القياس للجهاز: ${imei}`);
-      
       const measurements = config.healthMonitoring.measurements;
       const delay = config.healthMonitoring.delayBetweenCommands * 1000;
       let sentCount = 0;
 
-      // طلب الموقع (أولاً - أهم قياس!)
+      // 1️⃣ طلب الموقع (أول شي!)
       if (measurements.location) {
         const command = ProtocolBuilder.buildLocationRequest(imei);
         const success = this.sendCommandCallback(imei, command);
         if (success) {
-          logger.debug(`   📍 أمر الموقع: ${command.substring(0, 30)}...`);
+          logger.info(`   📍 أمر الموقع: IWBP16 → انتظار ${config.healthMonitoring.delayBetweenCommands}ث`);
           sentCount++;
           await this.delay(delay);
         }
       }
 
-      // قياس النبض
-      if (measurements.heartRate) {
-        const command = ProtocolBuilder.buildHeartRateTestCommand(imei);
-        const success = this.sendCommandCallback(imei, command);
-        if (success) {
-          logger.debug(`   ❤️  أمر النبض: ${command.substring(0, 30)}...`);
-          sentCount++;
-          await this.delay(delay);
-        }
-      }
-
-      // قياس ضغط الدم
+      // 2️⃣ قياس ضغط الدم + النبض
       if (measurements.bloodPressure) {
         const command = ProtocolBuilder.buildBloodPressureTestCommand(imei);
         const success = this.sendCommandCallback(imei, command);
         if (success) {
-          logger.debug(`   💉 أمر الضغط: ${command.substring(0, 30)}...`);
+          logger.info(`   💉 أمر ضغط الدم: IWBPXY → انتظار ${config.healthMonitoring.delayBetweenCommands}ث`);
           sentCount++;
           await this.delay(delay);
         }
       }
 
-      // قياس الحرارة
+      // 3️⃣ قياس حرارة الجسم
       if (measurements.temperature) {
         const command = ProtocolBuilder.buildTemperatureTestCommand(imei);
         const success = this.sendCommandCallback(imei, command);
         if (success) {
-          logger.debug(`   🌡️  أمر الحرارة: ${command.substring(0, 30)}...`);
+          logger.info(`   🌡️  أمر الحرارة: IWBPXT → انتظار ${config.healthMonitoring.delayBetweenCommands}ث`);
           sentCount++;
           await this.delay(delay);
         }
       }
 
-      // قياس الأكسجين
+      // 4️⃣ قياس الأكسجين
       if (measurements.bloodOxygen) {
         const command = ProtocolBuilder.buildOxygenTestCommand(imei);
         const success = this.sendCommandCallback(imei, command);
         if (success) {
-          logger.debug(`   🫁 أمر الأكسجين: ${command.substring(0, 30)}...`);
+          logger.info(`   🫁 أمر الأكسجين: IWBPXZ → انتظار ${config.healthMonitoring.delayBetweenCommands}ث`);
           sentCount++;
           await this.delay(delay);
         }
       }
 
       if (sentCount > 0) {
-        logger.info(`✓ تم إرسال ${sentCount} أمر قياس للجهاز ${imei}`);
+        logger.info(`   ✅ تم إرسال ${sentCount} أمر قياس`);
+        logger.info(`   ⏰ وقت الانتظار الكلي: ${(sentCount * config.healthMonitoring.delayBetweenCommands) / 60} دقيقة\n`);
+      } else {
+        logger.warn(`   ⚠️ لم يتم إرسال أي أوامر للجهاز ${imei}`);
       }
 
     } catch (err) {
-      logger.error(`خطأ في إرسال أوامر القياس للجهاز ${imei}:`, err.message);
+      logger.error(`❌ خطأ في إرسال القياسات للجهاز ${imei}:`, err.message);
     }
   }
 
   /**
    * دالة مساعدة للتأخير
-   * @param {number} ms - المدة بالميلي ثانية
    */
   delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -199,11 +192,12 @@ class HealthScheduler {
       lastRunTime: this.lastRunTime,
       measurementCount: this.measurementCount,
       measurements: config.healthMonitoring.measurements,
+      delayBetweenCommands: config.healthMonitoring.delayBetweenCommands,
     };
   }
 
   /**
-   * إعادة تشغيل النظام (للتطبيق الفوري للإعدادات الجديدة)
+   * إعادة تشغيل النظام
    */
   restart(sendCommandCallback, getConnectedDevicesCallback) {
     logger.info('🔄 إعادة تشغيل نظام القياسات الدورية...');
