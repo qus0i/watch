@@ -1,25 +1,38 @@
 const logger = require('../utils/logger');
 
 /**
- * محلل بروتوكول ساعة GPS - مع دعم محسّن لـ AP02
+ * محلل بروتوكول ساعة GPS
+ * يفك تشفير جميع أنواع الرسائل القادمة من الساعة
  */
 
 class ProtocolParser {
   
   /**
    * تحليل الرسالة الواردة
+   * @param {string} message - الرسالة الكاملة
+   * @returns {object|null} - البيانات المستخرجة
    */
   static parse(message) {
     try {
       message = message.trim();
       
+      // Debug: طباعة الرسالة الكاملة
+      console.log('\n🔍 محاولة تحليل رسالة:');
+      console.log(`   الطول: ${message.length}`);
+      console.log(`   المحتوى: ${message}`);
+      
+      // التحقق من البنية الأساسية
       if (!message.startsWith('IW') || !message.endsWith('#')) {
         logger.warn('رسالة غير صحيحة (لا تبدأ بـ IW أو لا تنتهي بـ #)');
+        console.log('❌ رسالة غير صحيحة - البنية خاطئة');
         return null;
       }
 
+      // استخراج نوع الأمر
       const commandType = message.substring(2, 6);
+      console.log(`   نوع الأمر: ${commandType}`);
       
+      // اختيار المحلل المناسب حسب نوع الأمر
       switch (commandType) {
         case 'AP00':
           return this.parseLoginPacket(message);
@@ -39,28 +52,29 @@ class ProtocolParser {
           return this.parseFullHealthPacket(message);
         case 'AP50':
           return this.parseTemperaturePacket(message);
-        case 'APXY':
-        case 'APXL':
-        case 'APXT':
-        case 'APXZ':
-          return this.parseCommandAcknowledge(message, commandType);
         default:
           logger.warn(`نوع أمر غير معروف: ${commandType}`);
+          console.log(`⚠️ نوع أمر غير معروف: ${commandType}`);
           return { type: 'UNKNOWN', commandType, rawMessage: message };
       }
 
     } catch (err) {
       logger.error('خطأ في تحليل الرسالة:', err.message);
+      console.error('❌ خطأ في تحليل الرسالة:', err);
       return null;
     }
   }
 
   /**
    * تحليل رسالة تسجيل الدخول (AP00)
+   * مثال: IWAP00353456789012345#
    */
   static parseLoginPacket(message) {
     const imei = message.substring(6, 21);
+    
     logger.info(`📱 رسالة تسجيل دخول من IMEI: ${imei}`);
+    console.log(`📱 تسجيل دخول - IMEI: ${imei}`);
+    
     return {
       type: 'LOGIN',
       imei,
@@ -69,117 +83,46 @@ class ProtocolParser {
   }
 
   /**
-   * ⭐ تحليل رسالة أبراج متعددة (AP02) - محسّن
-   * مثال: IWAP02,zh_cn,0,1,416,3,34102|36238101|27,1,a|48-12-8f-35-c0-ec|76#
+   * تحليل رسالة الموقع (AP01)
+   * مثال: IWAP01080524A2232.9806N11404.9355E000.1061830323.8706000908000102,460,0,9520,3671,Home|74-DE-2B-44-88-8C|97#
    */
-  static parseMultipleBasesPacket(message) {
+  static parseLocationPacket(message) {
     try {
+      console.log('📍 تحليل رسالة موقع GPS...');
+      
       // إزالة البادئة والنهاية
       const data = message.substring(6, message.length - 1);
       const parts = data.split(',');
 
-      logger.debug(`🔍 تحليل AP02: ${data}`);
+      console.log(`   عدد الأجزاء: ${parts.length}`);
+      console.log(`   الجزء الأول (GPS): ${parts[0]}`);
 
-      const language = parts[0]; // zh_cn
-      const replyFlag = parts[1]; // 0
-      const cellTowerCount = parseInt(parts[2]); // عدد الأبراج
-      
-      let currentIndex = 3;
-      
-      // استخراج MCC و MNC
-      const mcc = parseInt(parts[currentIndex++]);
-      const mnc = parseInt(parts[currentIndex++]);
-      
-      // استخراج الأبراج
-      const cellTowers = [];
-      for (let i = 0; i < cellTowerCount; i++) {
-        if (currentIndex >= parts.length) break;
-        
-        const towerData = parts[currentIndex++];
-        const towerParts = towerData.split('|');
-        
-        if (towerParts.length >= 3) {
-          cellTowers.push({
-            lac: parseInt(towerParts[0]),
-            cellId: parseInt(towerParts[1]),
-            signal: parseInt(towerParts[2]),
-          });
-        }
-      }
-      
-      // استخراج عدد الـ WiFi
-      const wifiCount = currentIndex < parts.length ? parseInt(parts[currentIndex++]) : 0;
-      
-      // استخراج شبكات WiFi
-      const wifiNetworks = [];
-      for (let i = 0; i < wifiCount; i++) {
-        if (currentIndex >= parts.length) break;
-        
-        const wifiData = parts[currentIndex++];
-        const wifiParts = wifiData.split('|');
-        
-        if (wifiParts.length >= 3) {
-          wifiNetworks.push({
-            ssid: wifiParts[0],
-            mac: wifiParts[1],
-            signal: parseInt(wifiParts[2]),
-          });
-        }
-      }
-
-      logger.info(`📡 رسالة أبراج متعددة:`);
-      logger.info(`   📡 ${cellTowers.length} أبراج`);
-      logger.info(`   📶 ${wifiNetworks.length} شبكات WiFi`);
-      
-      if (cellTowers.length > 0) {
-        logger.info(`   🗼 البرج الأول: LAC=${cellTowers[0].lac}, CellID=${cellTowers[0].cellId}, Signal=${cellTowers[0].signal}`);
-      }
-      
-      if (wifiNetworks.length > 0) {
-        logger.info(`   📶 WiFi الأول: SSID="${wifiNetworks[0].ssid}", MAC=${wifiNetworks[0].mac}, Signal=${wifiNetworks[0].signal}`);
-      }
-
-      return {
-        type: 'MULTIPLE_BASES',
-        imei: null, // سيتم تحديده من السياق
-        timestamp: new Date(),
-        mcc,
-        mnc,
-        cellTowers,
-        wifiNetworks,
-        language,
-      };
-
-    } catch (err) {
-      logger.error('خطأ في تحليل AP02:', err.message);
-      logger.error('الرسالة:', message);
-      return null;
-    }
-  }
-
-  /**
-   * تحليل رسالة الموقع (AP01)
-   */
-  static parseLocationPacket(message) {
-    try {
-      const data = message.substring(6, message.length - 1);
-      const parts = data.split(',');
-
+      // استخراج التاريخ والوقت والموقع
       const dateTimeGps = parts[0];
-      const date = dateTimeGps.substring(0, 6);
+      const date = dateTimeGps.substring(0, 6); // DDMMYY
       const gpsValid = dateTimeGps.charAt(6) === 'A';
       
+      console.log(`   GPS صحيح: ${gpsValid}`);
+      
+      // استخراج الإحداثيات
       const latitudeStr = dateTimeGps.substring(7, 17);
       const latitudeDir = dateTimeGps.charAt(17);
       const longitudeStr = dateTimeGps.substring(18, 29);
       const longitudeDir = dateTimeGps.charAt(29);
       const speed = parseFloat(dateTimeGps.substring(30, 35));
-      const time = dateTimeGps.substring(35, 41);
+      const time = dateTimeGps.substring(35, 41); // HHMMSS
       const direction = parseFloat(dateTimeGps.substring(41, 47));
       
+      console.log(`   خط العرض: ${latitudeStr}${latitudeDir}`);
+      console.log(`   خط الطول: ${longitudeStr}${longitudeDir}`);
+      
+      // تحويل الإحداثيات
       const latitude = this.convertCoordinate(latitudeStr, latitudeDir);
       const longitude = this.convertCoordinate(longitudeStr, longitudeDir);
 
+      console.log(`   الإحداثيات المحولة: ${latitude}, ${longitude}`);
+
+      // استخراج معلومات الحالة
       const statusInfo = dateTimeGps.substring(47);
       const gsmSignal = parseInt(statusInfo.substring(0, 3));
       const satelliteCount = parseInt(statusInfo.substring(3, 6));
@@ -187,17 +130,23 @@ class ProtocolParser {
       const fortificationState = parseInt(statusInfo.substring(10, 12));
       const workingMode = parseInt(statusInfo.substring(12, 14));
 
+      console.log(`   البطارية: ${batteryLevel}%`);
+      console.log(`   الأقمار الصناعية: ${satelliteCount}`);
+
+      // بيانات LBS
       const mcc = parseInt(parts[1]);
       const mnc = parseInt(parts[2]);
       const lac = parseInt(parts[3]);
       const cellId = parseInt(parts[4]);
 
+      // بيانات WIFI (إذا وُجِدت)
       let wifiData = [];
       if (parts.length > 5) {
         const wifiStr = parts.slice(5).join(',');
         wifiData = this.parseWifiData(wifiStr);
       }
 
+      // تركيب timestamp كامل
       const year = 2000 + parseInt(date.substring(4, 6));
       const month = parseInt(date.substring(2, 4));
       const day = parseInt(date.substring(0, 2));
@@ -207,10 +156,11 @@ class ProtocolParser {
       const timestamp = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
 
       logger.info(`📍 موقع GPS: ${latitude.toFixed(6)}, ${longitude.toFixed(6)} | بطارية: ${batteryLevel}%`);
+      console.log(`✅ تم تحليل الموقع بنجاح`);
 
       return {
         type: 'LOCATION',
-        imei: null,
+        imei: null, // سيتم تحديده من السياق
         timestamp,
         latitude,
         longitude,
@@ -231,12 +181,14 @@ class ProtocolParser {
 
     } catch (err) {
       logger.error('خطأ في تحليل رسالة الموقع:', err.message);
+      console.error('❌ خطأ في تحليل رسالة الموقع:', err);
       return null;
     }
   }
 
   /**
-   * تحليل Heartbeat (AP03)
+   * تحليل رسالة نبض القلب (Heartbeat - AP03)
+   * مثال: IWAP03,06000908000102,5555,30#
    */
   static parseHeartbeatPacket(message) {
     try {
@@ -254,6 +206,7 @@ class ProtocolParser {
       const rollFrequency = parseInt(parts[2] || 0);
 
       logger.debug(`💓 نبضة قلب: بطارية ${batteryLevel}% | خطوات ${stepCount}`);
+      console.log(`💓 Heartbeat - بطارية: ${batteryLevel}%`);
 
       return {
         type: 'HEARTBEAT',
@@ -269,22 +222,26 @@ class ProtocolParser {
       };
 
     } catch (err) {
-      logger.error('خطأ في تحليل Heartbeat:', err.message);
+      logger.error('خطأ في تحليل رسالة Heartbeat:', err.message);
       return null;
     }
   }
 
   /**
-   * تحليل الإنذار (AP10)
+   * تحليل رسالة الإنذار (AP10)
+   * مثال: IWAP10...00,zh-cn,00,WIFI_DATA#
    */
   static parseAlarmPacket(message) {
     try {
+      // مشابه لـ AP01 مع معلومات إنذار إضافية
       const locationData = this.parseLocationPacket('IWAP01' + message.substring(6));
       if (!locationData) return null;
 
+      // استخراج نوع الإنذار
       const data = message.substring(6, message.length - 1);
       const parts = data.split(',');
       
+      // نوع الإنذار في الجزء الأخير قبل اللغة
       let alertType = 'UNKNOWN';
       for (let i = parts.length - 4; i < parts.length; i++) {
         if (parts[i] === '01') alertType = 'SOS';
@@ -293,6 +250,7 @@ class ProtocolParser {
       }
 
       logger.warn(`⚠️ إنذار: ${alertType}`);
+      console.log(`🚨 إنذار - النوع: ${alertType}`);
 
       return {
         ...locationData,
@@ -301,13 +259,14 @@ class ProtocolParser {
       };
 
     } catch (err) {
-      logger.error('خطأ في تحليل الإنذار:', err.message);
+      logger.error('خطأ في تحليل رسالة الإنذار:', err.message);
       return null;
     }
   }
 
   /**
-   * تحليل قياس النبض (AP49)
+   * تحليل رسالة قياس النبض (AP49)
+   * مثال: IWAP49,68#
    */
   static parseHeartRatePacket(message) {
     try {
@@ -315,6 +274,7 @@ class ProtocolParser {
       const heartRate = parseInt(data.split(',')[1] || data);
 
       logger.info(`❤️ نبض القلب: ${heartRate} bpm`);
+      console.log(`❤️ نبض القلب: ${heartRate} bpm`);
 
       return {
         type: 'HEART_RATE',
@@ -324,24 +284,26 @@ class ProtocolParser {
       };
 
     } catch (err) {
-      logger.error('خطأ في تحليل النبض:', err.message);
+      logger.error('خطأ في تحليل قياس النبض:', err.message);
       return null;
     }
   }
 
   /**
-   * تحليل النبض وضغط الدم (APHT)
+   * تحليل رسالة النبض وضغط الدم (APHT)
+   * مثال: IWAPHT,60,130,85#
    */
   static parseHeartRateBPPacket(message) {
     try {
       const data = message.substring(6, message.length - 1);
       const parts = data.split(',');
 
-      const heartRate = parseInt(parts[0]);
-      const systolic = parseInt(parts[1]);
-      const diastolic = parseInt(parts[2]);
+      const heartRate = parseInt(parts[1]);
+      const systolic = parseInt(parts[2]);
+      const diastolic = parseInt(parts[3]);
 
       logger.info(`💉 نبض وضغط: ${heartRate} bpm | ${systolic}/${diastolic} mmHg`);
+      console.log(`💉 نبض وضغط: ${heartRate} bpm | ${systolic}/${diastolic} mmHg`);
 
       return {
         type: 'HEART_RATE_BP',
@@ -359,20 +321,22 @@ class ProtocolParser {
   }
 
   /**
-   * تحليل القياسات الكاملة (APHP)
+   * تحليل رسالة القياسات الكاملة (APHP)
+   * مثال: IWAPHP,60,130,85,95,90,,,,,,,,#
    */
   static parseFullHealthPacket(message) {
     try {
       const data = message.substring(6, message.length - 1);
       const parts = data.split(',');
 
-      const heartRate = parts[0] ? parseInt(parts[0]) : null;
-      const systolic = parts[1] ? parseInt(parts[1]) : null;
-      const diastolic = parts[2] ? parseInt(parts[2]) : null;
-      const spo2 = parts[3] ? parseInt(parts[3]) : null;
-      const bloodSugar = parts[4] ? parseInt(parts[4]) : null;
+      const heartRate = parts[1] ? parseInt(parts[1]) : null;
+      const systolic = parts[2] ? parseInt(parts[2]) : null;
+      const diastolic = parts[3] ? parseInt(parts[3]) : null;
+      const spo2 = parts[4] ? parseInt(parts[4]) : null;
+      const bloodSugar = parts[5] ? parseInt(parts[5]) : null;
 
       logger.info(`📊 قياسات كاملة: نبض ${heartRate} | ضغط ${systolic}/${diastolic} | أكسجين ${spo2}%`);
+      console.log(`📊 قياسات كاملة: نبض ${heartRate} | ضغط ${systolic}/${diastolic}`);
 
       return {
         type: 'FULL_HEALTH',
@@ -392,17 +356,19 @@ class ProtocolParser {
   }
 
   /**
-   * تحليل الحرارة (AP50)
+   * تحليل رسالة الحرارة (AP50)
+   * مثال: IWAP50,36.7,90#
    */
   static parseTemperaturePacket(message) {
     try {
       const data = message.substring(6, message.length - 1);
       const parts = data.split(',');
 
-      const temperature = parseFloat(parts[0]);
-      const batteryLevel = parseInt(parts[1]);
+      const temperature = parseFloat(parts[1]);
+      const batteryLevel = parseInt(parts[2]);
 
       logger.info(`🌡️ حرارة الجسم: ${temperature}°C | بطارية: ${batteryLevel}%`);
+      console.log(`🌡️ حرارة الجسم: ${temperature}°C`);
 
       return {
         type: 'TEMPERATURE',
@@ -419,19 +385,19 @@ class ProtocolParser {
   }
 
   /**
-   * تحليل رد الأمر (APXY, APXL, APXT, APXZ)
+   * تحليل رسالة أبراج متعددة (AP02)
    */
-  static parseCommandAcknowledge(message, commandType) {
+  static parseMultipleBasesPacket(message) {
     try {
-      logger.debug(`✅ تأكيد استلام أمر: ${commandType}`);
+      logger.debug('📡 رسالة أبراج متعددة (AP02)');
       return {
-        type: 'COMMAND_ACK',
-        commandType,
+        type: 'MULTIPLE_BASES',
         imei: null,
         timestamp: new Date(),
+        rawMessage: message,
       };
     } catch (err) {
-      logger.error('خطأ في تحليل رد الأمر:', err.message);
+      logger.error('خطأ في تحليل أبراج متعددة:', err.message);
       return null;
     }
   }
@@ -440,6 +406,7 @@ class ProtocolParser {
    * دوال مساعدة
    */
 
+  // تحويل إحداثيات GPS من صيغة NMEA إلى Decimal
   static convertCoordinate(coord, direction) {
     try {
       const degrees = parseInt(coord.substring(0, coord.indexOf('.') - 2));
@@ -456,6 +423,7 @@ class ProtocolParser {
     }
   }
 
+  // تحليل بيانات WIFI
   static parseWifiData(wifiStr) {
     try {
       if (!wifiStr || wifiStr.trim() === '') return [];
