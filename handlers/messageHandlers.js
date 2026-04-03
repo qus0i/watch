@@ -30,18 +30,77 @@ class MessageHandlers {
       logger.debug(`📤 رد تسجيل الدخول: ${response}`);
       console.log(`📤 رد تسجيل الدخول: ${response}`);
       
-      // طلب موقع فوري بعد تسجيل الدخول
-      setTimeout(() => {
-        const locationRequest = ProtocolBuilder.buildLocationRequest(data.imei);
-        socket.write(locationRequest);
-        logger.info(`📍 طلب موقع فوري من ${data.imei}: ${locationRequest}`);
-        console.log(`📍 طلب موقع فوري من ${data.imei}`);
-      }, 2000); // بعد ثانيتين
+      // بدء نظام القياسات الدورية
+      this.startPeriodicMeasurements(socket, data.imei);
       
     } catch (err) {
       logger.error('خطأ في معالجة تسجيل الدخول:', err.message);
       console.error('❌ خطأ في معالجة تسجيل الدخول:', err);
     }
+  }
+
+  /**
+   * نظام القياسات الدورية
+   */
+  static startPeriodicMeasurements(socket, imei) {
+    console.log(`\n🔄 تفعيل نظام القياسات الدورية للجهاز ${imei}`);
+    
+    // طلب موقع فوري
+    setTimeout(() => {
+      const locationRequest = ProtocolBuilder.buildLocationRequest(imei);
+      socket.write(locationRequest);
+      console.log(`📍 طلب موقع من ${imei}`);
+    }, 2000);
+    
+    // دورة قياسات كل 5 دقائق
+    const measurementCycle = setInterval(() => {
+      if (!socket || socket.destroyed) {
+        clearInterval(measurementCycle);
+        console.log(`⚠️ توقف نظام القياسات - الاتصال مقطوع`);
+        return;
+      }
+      
+      console.log(`\n🔄 جولة قياسات جديدة - ${imei}`);
+      
+      // 1. نبض
+      setTimeout(() => {
+        const hrCmd = ProtocolBuilder.buildHeartRateTestCommand(imei);
+        socket.write(hrCmd);
+        console.log(`❤️ طلب قياس نبض`);
+      }, 1000);
+      
+      // 2. ضغط
+      setTimeout(() => {
+        const bpCmd = ProtocolBuilder.buildBloodPressureTestCommand(imei);
+        socket.write(bpCmd);
+        console.log(`💉 طلب قياس ضغط`);
+      }, 3000);
+      
+      // 3. حرارة
+      setTimeout(() => {
+        const tempCmd = ProtocolBuilder.buildTemperatureTestCommand(imei);
+        socket.write(tempCmd);
+        console.log(`🌡️ طلب قياس حرارة`);
+      }, 5000);
+      
+      // 4. أكسجين
+      setTimeout(() => {
+        const spo2Cmd = ProtocolBuilder.buildOxygenTestCommand(imei);
+        socket.write(spo2Cmd);
+        console.log(`🫁 طلب قياس أكسجين`);
+      }, 7000);
+      
+      // 5. موقع
+      setTimeout(() => {
+        const locCmd = ProtocolBuilder.buildLocationRequest(imei);
+        socket.write(locCmd);
+        console.log(`📍 طلب موقع`);
+      }, 9000);
+      
+    }, 5 * 60 * 1000); // كل 5 دقائق
+    
+    // حفظ reference للـ interval
+    socket.measurementCycle = measurementCycle;
   }
 
   /**
@@ -58,7 +117,7 @@ class MessageHandlers {
         return;
       }
 
-      console.log(`\n💾 حفظ موقع للجهاز ${data.imei}:`);
+      console.log(`\n💾 حفظ موقع GPS للجهاز ${data.imei}:`);
       console.log(`   الإحداثيات: ${data.latitude}, ${data.longitude}`);
       console.log(`   GPS صحيح: ${data.gpsValid}`);
       console.log(`   البطارية: ${data.batteryLevel}%`);
@@ -67,9 +126,9 @@ class MessageHandlers {
       const saved = await db.saveLocation(data);
       
       if (saved) {
-        console.log(`✅ تم حفظ الموقع بنجاح في قاعدة البيانات`);
+        console.log(`✅ تم حفظ موقع GPS بنجاح`);
       } else {
-        console.log(`❌ فشل حفظ الموقع في قاعدة البيانات`);
+        console.log(`❌ فشل حفظ موقع GPS`);
       }
       
       // إرسال الرد
@@ -291,28 +350,83 @@ class MessageHandlers {
   }
 
   /**
-   * معالجة رسالة أبراج متعددة
+   * معالجة رسالة أبراج متعددة (LBS - الموقع التقريبي)
    */
   static async handleMultipleBases(data, socket) {
-  try {
-    data.imei = socket.imei;
-    
-    if (!data.imei) return;
+    try {
+      data.imei = socket.imei;
+      
+      if (!data.imei) {
+        console.log('⚠️ بيانات LBS بدون IMEI');
+        return;
+      }
 
-    console.log(`📡 استقبال بيانات LBS من ${data.imei}`);
-    console.log(`   (موقع تقريبي من أبراج الشبكة)`);
-    
-    // حفظ بيانات LBS كموقع تقريبي
-    // TODO: يمكن تحويل LAC+CID إلى إحداثيات باستخدام OpenCellID API
-    
-    // إرسال الرد
-    const response = ProtocolBuilder.buildMultipleBasesResponse();
-    socket.write(response);
-    
-  } catch (err) {
-    logger.error('خطأ في معالجة أبراج متعددة:', err.message);
+      console.log(`\n📡 استقبال موقع LBS (تقريبي) من ${data.imei}`);
+      
+      // تحليل البيانات
+      const rawData = data.rawMessage.substring(6, data.rawMessage.length - 1);
+      const parts = rawData.split(',');
+      
+      console.log(`   البيانات: ${rawData}`);
+      
+      if (parts.length >= 5) {
+        const mcc = parseInt(parts[3]);
+        const mnc = parseInt(parts[4]);
+        const lbsData = parts[5] || ''; // مثلاً: 34102|36238101|28
+        
+        console.log(`   MCC: ${mcc} (الأردن)`);
+        console.log(`   MNC: ${mnc} (أمنية)`);
+        console.log(`   LBS: ${lbsData}`);
+        
+        // استخراج LAC و CID
+        let lac = 0;
+        let cellId = 0;
+        
+        if (lbsData && lbsData.includes('|')) {
+          const lbsParts = lbsData.split('|');
+          lac = parseInt(lbsParts[0]) || 0;
+          cellId = parseInt(lbsParts[1]) || 0;
+        }
+        
+        console.log(`   LAC: ${lac}, Cell ID: ${cellId}`);
+        
+        // حفظ كموقع تقريبي
+        const saved = await db.saveLocation({
+          imei: data.imei,
+          timestamp: new Date(),
+          latitude: 0, // سنحسبها لاحقاً من OpenCellID API
+          longitude: 0,
+          speed: 0,
+          direction: 0,
+          gpsValid: false, // ليس GPS حقيقي - موقع تقريبي
+          satelliteCount: 0,
+          gsmSignal: 50,
+          batteryLevel: 0,
+          mcc,
+          mnc,
+          lac,
+          cellId,
+          wifiData: [],
+          fortificationState: 0,
+          workingMode: 0,
+        });
+        
+        if (saved) {
+          console.log(`✅ تم حفظ موقع LBS (تقريبي) بنجاح`);
+        } else {
+          console.log(`❌ فشل حفظ موقع LBS`);
+        }
+      }
+      
+      // إرسال الرد
+      const response = ProtocolBuilder.buildMultipleBasesResponse();
+      socket.write(response);
+      
+    } catch (err) {
+      logger.error('خطأ في معالجة أبراج متعددة:', err.message);
+      console.error('❌ خطأ في معالجة LBS:', err);
+    }
   }
-}
 
   /**
    * توجيه الرسالة للمعالج المناسب
