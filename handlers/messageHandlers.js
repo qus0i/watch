@@ -4,7 +4,6 @@ const ProtocolBuilder = require('../protocol/builder');
 
 /**
  * معالجات الرسائل
- * كل معالج يستقبل البيانات المحللة ويعالجها
  */
 
 class MessageHandlers {
@@ -14,8 +13,8 @@ class MessageHandlers {
    */
   static async handleLogin(data, socket) {
     try {
+      console.log(`\n🔐 [LOGIN] تسجيل دخول من IMEI: ${data.imei}`);
       logger.info(`✅ تسجيل دخول ناجح: ${data.imei}`);
-      console.log(`✅ تم تسجيل IMEI: ${data.imei} للاتصال ${socket.clientId}`);
       
       // حفظ أو تحديث الجهاز في قاعدة البيانات
       await db.getOrCreateDevice(data.imei);
@@ -27,115 +26,18 @@ class MessageHandlers {
       const response = ProtocolBuilder.buildLoginResponse();
       socket.write(response);
       
+      console.log(`📤 [LOGIN] رد: ${response}`);
       logger.debug(`📤 رد تسجيل الدخول: ${response}`);
-      console.log(`📤 رد تسجيل الدخول: ${response}`);
       
-      // بدء نظام القياسات الدورية
-      this.startPeriodicMeasurements(socket, data.imei);
-      
-    } catch (err) {
-      logger.error('خطأ في معالجة تسجيل الدخول:', err.message);
-      console.error('❌ خطأ في معالجة تسجيل الدخول:', err);
-    }
-  }
-
-  /**
-   * نظام القياسات الدورية
-   */
-  static startPeriodicMeasurements(socket, imei) {
-    console.log(`\n🔄 تفعيل نظام القياسات الدورية للجهاز ${imei}`);
-    
-    // طلب موقع فوري
-    setTimeout(() => {
-      if (socket && !socket.destroyed) {
-        const locationRequest = ProtocolBuilder.buildLocationRequest(imei);
-        socket.write(locationRequest);
-        console.log(`📍 طلب موقع من ${imei}`);
-      }
-    }, 2000);
-    
-    // تعطيل حساس NOT_WEAR
-    setTimeout(() => {
-      if (socket && !socket.destroyed) {
-        const journalNo = this.generateJournalNo();
-        const notWearCmd = `IWBP84,${imei},${journalNo},0#`;
-        socket.write(notWearCmd);
-        console.log(`🔕 تعطيل حساس خلع الساعة`);
-      }
-    }, 4000);
-    
-    // دورة قياسات كل 5 دقائق
-    const measurementCycle = setInterval(() => {
-      if (!socket || socket.destroyed) {
-        clearInterval(measurementCycle);
-        console.log(`⚠️ توقف نظام القياسات - الاتصال مقطوع`);
-        return;
-      }
-      
-      console.log(`\n🔄 جولة قياسات جديدة - ${imei}`);
-      
-      // 1. نبض
+      // بدء القياسات الدورية بعد تسجيل الدخول
       setTimeout(() => {
-        if (socket && !socket.destroyed) {
-          const hrCmd = ProtocolBuilder.buildHeartRateTestCommand(imei);
-          socket.write(hrCmd);
-          console.log(`❤️ طلب قياس نبض`);
-        }
-      }, 1000);
-      
-      // 2. ضغط
-      setTimeout(() => {
-        if (socket && !socket.destroyed) {
-          const bpCmd = ProtocolBuilder.buildBloodPressureTestCommand(imei);
-          socket.write(bpCmd);
-          console.log(`💉 طلب قياس ضغط`);
-        }
+        this.startPeriodicMeasurements(socket);
       }, 3000);
       
-      // 3. حرارة
-      setTimeout(() => {
-        if (socket && !socket.destroyed) {
-          const tempCmd = ProtocolBuilder.buildTemperatureTestCommand(imei);
-          socket.write(tempCmd);
-          console.log(`🌡️ طلب قياس حرارة`);
-        }
-      }, 5000);
-      
-      // 4. أكسجين
-      setTimeout(() => {
-        if (socket && !socket.destroyed) {
-          const spo2Cmd = ProtocolBuilder.buildOxygenTestCommand(imei);
-          socket.write(spo2Cmd);
-          console.log(`🫁 طلب قياس أكسجين`);
-        }
-      }, 7000);
-      
-      // 5. موقع
-      setTimeout(() => {
-        if (socket && !socket.destroyed) {
-          const locCmd = ProtocolBuilder.buildLocationRequest(imei);
-          socket.write(locCmd);
-          console.log(`📍 طلب موقع`);
-        }
-      }, 9000);
-      
-    }, 5 * 60 * 1000); // كل 5 دقائق
-    
-    // حفظ reference للـ interval
-    socket.measurementCycle = measurementCycle;
-  }
-
-  /**
-   * توليد Journal Number
-   */
-  static generateJournalNo() {
-    const now = new Date();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hour = String(now.getHours()).padStart(2, '0');
-    const minute = String(now.getMinutes()).padStart(2, '0');
-    const second = String(now.getSeconds()).padStart(2, '0');
-    return `${month}${day}${hour}${minute}${second}`;
+    } catch (err) {
+      console.error(`❌ [LOGIN] خطأ:`, err.message);
+      logger.error('خطأ في معالجة تسجيل الدخول:', err.message);
+    }
   }
 
   /**
@@ -143,36 +45,131 @@ class MessageHandlers {
    */
   static async handleLocation(data, socket) {
     try {
-      // إضافة IMEI من السياق
       data.imei = socket.imei;
       
       if (!data.imei) {
+        console.warn('⚠️ [LOCATION] رسالة موقع بدون IMEI');
         logger.warn('رسالة موقع بدون IMEI محدد');
-        console.log('⚠️ رسالة موقع بدون IMEI');
         return;
       }
 
-      console.log(`\n💾 حفظ موقع GPS للجهاز ${data.imei}:`);
-      console.log(`   الإحداثيات: ${data.latitude}, ${data.longitude}`);
-      console.log(`   GPS صحيح: ${data.gpsValid}`);
-      console.log(`   البطارية: ${data.batteryLevel}%`);
+      console.log(`\n📍 [LOCATION] موقع GPS من ${data.imei}`);
+      console.log(`   GPS Valid: ${data.gpsValid}`);
+      console.log(`   Lat: ${data.latitude}, Lng: ${data.longitude}`);
+      console.log(`   Battery: ${data.batteryLevel}%`);
 
       // حفظ في قاعدة البيانات
-      const saved = await db.saveLocation(data);
-      
-      if (saved) {
-        console.log(`✅ تم حفظ موقع GPS بنجاح`);
-      } else {
-        console.log(`❌ فشل حفظ موقع GPS`);
-      }
+      await db.saveLocation(data);
       
       // إرسال الرد
       const response = ProtocolBuilder.buildLocationResponse();
       socket.write(response);
       
     } catch (err) {
+      console.error(`❌ [LOCATION] خطأ:`, err.message);
       logger.error('خطأ في معالجة الموقع:', err.message);
-      console.error('❌ خطأ في معالجة الموقع:', err);
+    }
+  }
+
+  /**
+   * معالجة رسالة LBS (أبراج الشبكة)
+   */
+  static async handleMultipleBases(data, socket) {
+    try {
+      console.log(`\n📡 [LBS] رسالة أبراج متعددة`);
+      
+      // استخراج البيانات من الرسالة
+      const message = data.rawMessage;
+      const afterCommand = message.substring(6, message.length - 1);
+      const parts = afterCommand.split(',');
+      
+      console.log(`🔍 محاولة تحليل رسالة:`);
+      console.log(`   📨 الرسالة الكاملة: ${message}`);
+      console.log(`   الطول: ${message.length}`);
+      console.log(`   📦 البيانات: ${afterCommand}`);
+      console.log(`   🔢 عدد الأجزاء: ${parts.length}`);
+      
+      if (parts.length < 7) {
+        console.warn(`⚠️ [LBS] رسالة قصيرة - عدد الأجزاء: ${parts.length}`);
+        const response = ProtocolBuilder.buildMultipleBasesResponse();
+        socket.write(response);
+        return;
+      }
+
+      // استخراج بيانات LBS
+      const mcc = parseInt(parts[4]);
+      const mnc = parseInt(parts[5]);
+      const baseInfo = parts[6].split('|');
+      const lac = parseInt(baseInfo[0]);
+      const cellId = parseInt(baseInfo[1]);
+      const signal = parseInt(baseInfo[2]);
+      
+      console.log(`   🌍 MCC: ${mcc} (${mcc === 416 ? 'الأردن' : 'غير معروف'})`);
+      console.log(`   📱 MNC: ${mnc} (${mnc === 3 ? 'أمنية' : mnc === 77 ? 'زين' : mnc === 1 ? 'أورانج' : 'غير معروف'})`);
+      console.log(`   📍 LAC: ${lac}`);
+      console.log(`   🗼 Cell ID: ${cellId}`);
+      console.log(`   📶 Signal: ${signal} dBm`);
+
+      // استخراج WiFi إذا موجود
+      let wifiData = [];
+      if (parts.length > 7) {
+        const wifiCount = parseInt(parts[7]);
+        console.log(`   📶 عدد شبكات WiFi: ${wifiCount}`);
+        
+        if (wifiCount > 0 && parts.length > 8) {
+          const wifiStr = parts[8];
+          console.log(`   📶 WiFi: ${wifiStr}`);
+          
+          const networks = wifiStr.split('&');
+          wifiData = networks.map(network => {
+            const netParts = network.split('|');
+            return {
+              ssid: netParts[0],
+              mac: netParts[1],
+              signal: parseInt(netParts[2])
+            };
+          });
+        }
+      }
+
+      // حفظ الموقع
+      const locationData = {
+        imei: socket.imei,
+        timestamp: new Date(),
+        latitude: 0,
+        longitude: 0,
+        speed: 0,
+        direction: 0,
+        gpsValid: false,
+        satelliteCount: 0,
+        gsmSignal: signal,
+        batteryLevel: 0,
+        mcc: mcc,
+        mnc: mnc,
+        lac: lac,
+        cellId: cellId,
+        wifiData: wifiData,
+        fortificationState: 0,
+        workingMode: 0
+      };
+
+      const saved = await db.saveLocation(locationData);
+      
+      if (saved) {
+        console.log(`✅ تم حفظ موقع LBS بنجاح`);
+        console.log(`   📊 MCC:${mcc}, MNC:${mnc}, LAC:${lac}, CID:${cellId}`);
+      } else {
+        console.error(`❌ فشل حفظ موقع LBS`);
+      }
+
+      // إرسال الرد
+      const response = ProtocolBuilder.buildMultipleBasesResponse();
+      socket.write(response);
+      
+    } catch (err) {
+      console.error(`❌ [LBS] خطأ في معالجة:`, err.message);
+      console.error(`   Stack:`, err.stack);
+      logger.error('خطأ في معالجة أبراج متعددة:', err.message);
     }
   }
 
@@ -185,7 +182,9 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
-      console.log(`💓 Heartbeat من ${data.imei} - بطارية: ${data.batteryLevel}%`);
+      console.log(`\n💓 [HEARTBEAT] من ${data.imei}`);
+      console.log(`   Battery: ${data.batteryLevel}%`);
+      console.log(`   Steps: ${data.stepCount}`);
 
       // تحديث آخر اتصال
       await db.getOrCreateDevice(data.imei);
@@ -193,7 +192,6 @@ class MessageHandlers {
       // تحديث الخطوات اليومية
       if (data.stepCount) {
         await db.updateDailySteps(data.imei, data.stepCount, data.rollFrequency);
-        console.log(`   الخطوات: ${data.stepCount}`);
       }
       
       // إرسال الرد
@@ -201,6 +199,7 @@ class MessageHandlers {
       socket.write(response);
       
     } catch (err) {
+      console.error(`❌ [HEARTBEAT] خطأ:`, err.message);
       logger.error('خطأ في معالجة Heartbeat:', err.message);
     }
   }
@@ -214,7 +213,9 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
-      console.log(`🚨 إنذار من ${data.imei} - النوع: ${data.alertType}`);
+      console.log(`\n🚨 [ALARM] إنذار من ${data.imei}`);
+      console.log(`   النوع: ${data.alertType}`);
+      console.log(`   الموقع: ${data.latitude}, ${data.longitude}`);
 
       // حفظ الموقع
       await db.saveLocation(data);
@@ -228,7 +229,6 @@ class MessageHandlers {
         longitude: data.longitude,
       });
       
-      // TODO: إرسال إشعار للمستخدم (Push Notification / SMS / Email)
       logger.warn(`🚨 إنذار ${data.alertType} من ${data.imei}`);
       
       // إرسال الرد
@@ -236,6 +236,7 @@ class MessageHandlers {
       socket.write(response);
       
     } catch (err) {
+      console.error(`❌ [ALARM] خطأ:`, err.message);
       logger.error('خطأ في معالجة الإنذار:', err.message);
     }
   }
@@ -249,27 +250,26 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
-      console.log(`\n❤️ استقبال نبض القلب:`);
-      console.log(`   IMEI: ${data.imei}`);
+      console.log(`\n❤️ [HEART_RATE] من ${data.imei}`);
       console.log(`   النبض: ${data.heartRate} bpm`);
 
-      const saved = await db.saveHealthData({
-        imei: data.imei,
-        heartRate: data.heartRate,
-      });
-      
-      if (saved) {
-        console.log(`✅ تم حفظ نبض القلب بنجاح`);
+      // تحقق من القيمة
+      if (data.heartRate && data.heartRate > 0 && data.heartRate < 200) {
+        await db.saveHealthData({
+          imei: data.imei,
+          heartRate: data.heartRate,
+        });
+        console.log(`✅ تم حفظ قياس النبض`);
       } else {
-        console.log(`❌ فشل حفظ نبض القلب`);
+        console.warn(`⚠️ قياس نبض غير صحيح: ${data.heartRate}`);
       }
       
       const response = ProtocolBuilder.buildHeartRateResponse();
       socket.write(response);
       
     } catch (err) {
+      console.error(`❌ [HEART_RATE] خطأ:`, err.message);
       logger.error('خطأ في معالجة النبض:', err.message);
-      console.error('❌ خطأ في معالجة النبض:', err);
     }
   }
 
@@ -282,30 +282,32 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
-      console.log(`\n💉 استقبال بيانات ضغط ونبض:`);
-      console.log(`   IMEI: ${data.imei}`);
-      console.log(`   نبض: ${data.heartRate} bpm`);
-      console.log(`   ضغط: ${data.systolic}/${data.diastolic} mmHg`);
+      console.log(`\n💉 [HEART_RATE_BP] من ${data.imei}`);
+      console.log(`   النبض: ${data.heartRate} bpm`);
+      console.log(`   الضغط: ${data.systolic}/${data.diastolic} mmHg`);
 
-      const saved = await db.saveHealthData({
-        imei: data.imei,
-        heartRate: data.heartRate,
-        systolic: data.systolic,
-        diastolic: data.diastolic,
-      });
-      
-      if (saved) {
-        console.log(`✅ تم حفظ الضغط والنبض بنجاح`);
+      // تحقق من القيم
+      const validHR = data.heartRate && data.heartRate > 0 && data.heartRate < 200;
+      const validBP = data.systolic && data.systolic > 0 && data.systolic < 250;
+
+      if (validHR || validBP) {
+        await db.saveHealthData({
+          imei: data.imei,
+          heartRate: validHR ? data.heartRate : null,
+          systolic: validBP ? data.systolic : null,
+          diastolic: validBP ? data.diastolic : null,
+        });
+        console.log(`✅ تم حفظ قياس النبض والضغط`);
       } else {
-        console.log(`❌ فشل حفظ الضغط والنبض`);
+        console.warn(`⚠️ قياسات غير صحيحة - تم تجاهلها`);
       }
       
       const response = ProtocolBuilder.buildHeartRateBPResponse();
       socket.write(response);
       
     } catch (err) {
+      console.error(`❌ [HEART_RATE_BP] خطأ:`, err.message);
       logger.error('خطأ في معالجة النبض والضغط:', err.message);
-      console.error('❌ خطأ في معالجة النبض والضغط:', err);
     }
   }
 
@@ -318,34 +320,45 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
-      console.log(`\n📊 استقبال قياسات كاملة:`);
-      console.log(`   IMEI: ${data.imei}`);
-      console.log(`   نبض: ${data.heartRate} bpm`);
-      console.log(`   ضغط: ${data.systolic}/${data.diastolic} mmHg`);
-      console.log(`   أكسجين: ${data.spo2}%`);
-      console.log(`   سكر: ${data.bloodSugar}`);
+      console.log(`\n📊 [FULL_HEALTH] من ${data.imei}`);
+      console.log(`   النبض: ${data.heartRate} bpm`);
+      console.log(`   الضغط: ${data.systolic}/${data.diastolic} mmHg`);
+      console.log(`   الأكسجين: ${data.spo2}%`);
+      console.log(`   السكر: ${data.bloodSugar} mg/dL`);
 
-      const saved = await db.saveHealthData({
+      // تحقق من القيم وحفظ فقط الصحيحة
+      const healthData = {
         imei: data.imei,
-        heartRate: data.heartRate,
-        systolic: data.systolic,
-        diastolic: data.diastolic,
-        spo2: data.spo2,
-        bloodSugar: data.bloodSugar,
-      });
-      
-      if (saved) {
-        console.log(`✅ تم حفظ القياسات الكاملة بنجاح`);
+      };
+
+      if (data.heartRate && data.heartRate > 0 && data.heartRate < 200) {
+        healthData.heartRate = data.heartRate;
+      }
+      if (data.systolic && data.systolic > 0 && data.systolic < 250) {
+        healthData.systolic = data.systolic;
+        healthData.diastolic = data.diastolic;
+      }
+      if (data.spo2 && data.spo2 > 0 && data.spo2 <= 100) {
+        healthData.spo2 = data.spo2;
+      }
+      if (data.bloodSugar && data.bloodSugar > 0 && data.bloodSugar < 500) {
+        healthData.bloodSugar = data.bloodSugar;
+      }
+
+      // احفظ فقط إذا في قيمة واحدة على الأقل صحيحة
+      if (Object.keys(healthData).length > 1) {
+        await db.saveHealthData(healthData);
+        console.log(`✅ تم حفظ القياسات الكاملة`);
       } else {
-        console.log(`❌ فشل حفظ القياسات الكاملة`);
+        console.warn(`⚠️ كل القياسات غير صحيحة - تم تجاهلها`);
       }
       
       const response = ProtocolBuilder.buildFullHealthResponse();
       socket.write(response);
       
     } catch (err) {
+      console.error(`❌ [FULL_HEALTH] خطأ:`, err.message);
       logger.error('خطأ في معالجة القياسات الكاملة:', err.message);
-      console.error('❌ خطأ في معالجة القياسات الكاملة:', err);
     }
   }
 
@@ -358,140 +371,124 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
-      console.log(`\n🌡️ استقبال حرارة الجسم:`);
-      console.log(`   IMEI: ${data.imei}`);
+      console.log(`\n🌡️ [TEMPERATURE] من ${data.imei}`);
       console.log(`   الحرارة: ${data.temperature}°C`);
       console.log(`   البطارية: ${data.batteryLevel}%`);
 
-      const saved = await db.saveHealthData({
-        imei: data.imei,
-        temperature: data.temperature,
-        batteryLevel: data.batteryLevel,
-      });
-      
-      if (saved) {
-        console.log(`✅ تم حفظ الحرارة بنجاح`);
+      // تحقق من القيمة
+      if (data.temperature && data.temperature > 30 && data.temperature < 45) {
+        await db.saveHealthData({
+          imei: data.imei,
+          temperature: data.temperature,
+          batteryLevel: data.batteryLevel,
+        });
+        console.log(`✅ تم حفظ قياس الحرارة`);
       } else {
-        console.log(`❌ فشل حفظ الحرارة`);
+        console.warn(`⚠️ قياس حرارة غير صحيح: ${data.temperature}°C`);
       }
       
       const response = ProtocolBuilder.buildTemperatureResponse();
       socket.write(response);
       
     } catch (err) {
+      console.error(`❌ [TEMPERATURE] خطأ:`, err.message);
       logger.error('خطأ في معالجة الحرارة:', err.message);
-      console.error('❌ خطأ في معالجة الحرارة:', err);
     }
   }
 
   /**
-   * معالجة رسالة أبراج متعددة (LBS - الموقع التقريبي)
+   * بدء القياسات الدورية
    */
-  static async handleMultipleBases(data, socket) {
-    try {
-      data.imei = socket.imei;
-      
-      if (!data.imei) {
-        console.log('⚠️ بيانات LBS بدون IMEI');
-        const response = ProtocolBuilder.buildMultipleBasesResponse();
-        socket.write(response);
+  static startPeriodicMeasurements(socket) {
+    if (!socket.imei) {
+      console.warn(`⚠️ [PERIODIC] لا يمكن بدء القياسات - IMEI غير موجود`);
+      return;
+    }
+
+    console.log(`\n🔄 [PERIODIC] بدء القياسات الدورية للجهاز ${socket.imei}`);
+
+    // طلب موقع فوري أولاً
+    setTimeout(() => {
+      const journalNo = ProtocolBuilder.generateJournalNo();
+      const locationCmd = ProtocolBuilder.buildLocationRequest(socket.imei, journalNo);
+      console.log(`📍 [PERIODIC] طلب موقع: ${locationCmd}`);
+      socket.write(locationCmd);
+    }, 2000);
+
+    // تعطيل NOT_WEAR sensor
+    setTimeout(() => {
+      const journalNo = ProtocolBuilder.generateJournalNo();
+      const notWearCmd = `IWBP84,${socket.imei},${journalNo},0#`;
+      console.log(`👕 [PERIODIC] تعطيل NOT_WEAR: ${notWearCmd}`);
+      socket.write(notWearCmd);
+    }, 4000);
+
+    // دورة القياسات (كل 5 دقائق)
+    const measurementCycle = () => {
+      if (!socket.writable || socket.destroyed) {
+        console.log(`⚠️ [PERIODIC] الاتصال مقطوع - إيقاف القياسات`);
         return;
       }
 
-      console.log(`\n📡 استقبال موقع LBS (تقريبي) من ${data.imei}`);
-      
-      // الرسالة: IWAP02,zh_cn,0,1,416,3,34102|13256381|18,1,a|48-12-8f-35-c0-ec|74#
-      const fullMessage = data.rawMessage;
-      console.log(`   📨 الرسالة الكاملة: ${fullMessage}`);
-      
-      // إزالة IW من البداية و # من النهاية
-      // substring(6) يزيل "IWAP02" لكن يترك الفاصلة الأولى
-      const rawData = fullMessage.substring(6, fullMessage.length - 1);
-      console.log(`   📦 البيانات: ${rawData}`);
-      
-      // split بالفاصلة
-      const parts = rawData.split(',');
-      console.log(`   🔢 عدد الأجزاء: ${parts.length}`);
-      
-      // parts[0] = "" (فارغ بسبب الفاصلة الأولى)
-      // parts[1] = "zh_cn"
-      // parts[2] = "0"
-      // parts[3] = "1"
-      // parts[4] = "416" ← MCC هنا!
-      // parts[5] = "3"   ← MNC هنا!
-      // parts[6] = "34102|13256381|18" ← LBS هنا!
-      // parts[7] = "1"
-      // parts[8] = "a|48-12-8f-35-c0-ec|74"
-      
-      if (parts.length >= 7) {
-        const mcc = parseInt(parts[4]);      // MCC في الموضع 4
-        const mnc = parseInt(parts[5]);      // MNC في الموضع 5
-        const lbsData = parts[6] || '';      // LBS في الموضع 6
-        
-        console.log(`   🌍 MCC: ${mcc} (${mcc === 416 ? 'الأردن' : 'غير معروف'})`);
-        console.log(`   📱 MNC: ${mnc} (${mnc === 3 ? 'أمنية' : mnc === 77 ? 'زين' : mnc === 1 ? 'أورانج' : 'غير معروف'})`);
-        console.log(`   📡 LBS Data: ${lbsData}`);
-        
-        // تحليل LAC|CID|signal
-        let lac = 0;
-        let cellId = 0;
-        let signalStrength = 0;
-        
-        if (lbsData && lbsData.includes('|')) {
-          const lbsParts = lbsData.split('|');
-          lac = parseInt(lbsParts[0]) || 0;
-          cellId = parseInt(lbsParts[1]) || 0;
-          signalStrength = parseInt(lbsParts[2]) || 0;
-          
-          console.log(`   📍 LAC: ${lac}`);
-          console.log(`   🗼 Cell ID: ${cellId}`);
-          console.log(`   📶 Signal: ${signalStrength} dBm`);
-        }
-        
-        // WiFi (إن وجد)
-        if (parts.length >= 9 && parts[8]) {
-          console.log(`   📶 WiFi: ${parts[8]}`);
-        }
-        
-        // حفظ في قاعدة البيانات
-        const saved = await db.saveLocation({
-          imei: data.imei,
-          timestamp: new Date(),
-          latitude: 0,
-          longitude: 0,
-          speed: 0,
-          direction: 0,
-          gpsValid: false,
-          satelliteCount: 0,
-          gsmSignal: Math.abs(signalStrength),
-          batteryLevel: 0,
-          mcc,
-          mnc,
-          lac,
-          cellId,
-          wifiData: [],
-          fortificationState: 0,
-          workingMode: 0,
-        });
-        
-        if (saved) {
-          console.log(`✅ تم حفظ موقع LBS بنجاح`);
-          console.log(`   📊 MCC:${mcc}, MNC:${mnc}, LAC:${lac}, CID:${cellId}`);
-        } else {
-          console.log(`❌ فشل حفظ موقع LBS`);
-        }
-      } else {
-        console.log(`⚠️ بيانات غير كاملة - ${parts.length} أجزاء فقط`);
+      console.log(`\n🔄 [PERIODIC] دورة قياسات جديدة للجهاز ${socket.imei}`);
+
+      // 1. قياس النبض
+      setTimeout(() => {
+        const journalNo = ProtocolBuilder.generateJournalNo();
+        const hrCmd = ProtocolBuilder.buildHeartRateTestCommand(socket.imei, journalNo);
+        console.log(`❤️ [PERIODIC] طلب نبض: ${hrCmd}`);
+        socket.write(hrCmd);
+      }, 1000);
+
+      // 2. قياس الضغط
+      setTimeout(() => {
+        const journalNo = ProtocolBuilder.generateJournalNo();
+        const bpCmd = ProtocolBuilder.buildBloodPressureTestCommand(socket.imei, journalNo);
+        console.log(`💉 [PERIODIC] طلب ضغط: ${bpCmd}`);
+        socket.write(bpCmd);
+      }, 3000);
+
+      // 3. قياس الحرارة
+      setTimeout(() => {
+        const journalNo = ProtocolBuilder.generateJournalNo();
+        const tempCmd = ProtocolBuilder.buildTemperatureTestCommand(socket.imei, journalNo);
+        console.log(`🌡️ [PERIODIC] طلب حرارة: ${tempCmd}`);
+        socket.write(tempCmd);
+      }, 5000);
+
+      // 4. قياس الأكسجين
+      setTimeout(() => {
+        const journalNo = ProtocolBuilder.generateJournalNo();
+        const spo2Cmd = ProtocolBuilder.buildOxygenTestCommand(socket.imei, journalNo);
+        console.log(`🫁 [PERIODIC] طلب أكسجين: ${spo2Cmd}`);
+        socket.write(spo2Cmd);
+      }, 7000);
+
+      // 5. طلب موقع
+      setTimeout(() => {
+        const journalNo = ProtocolBuilder.generateJournalNo();
+        const locationCmd = ProtocolBuilder.buildLocationRequest(socket.imei, journalNo);
+        console.log(`📍 [PERIODIC] طلب موقع: ${locationCmd}`);
+        socket.write(locationCmd);
+      }, 9000);
+    };
+
+    // أول دورة بعد 10 ثواني
+    setTimeout(measurementCycle, 10000);
+
+    // دورات متكررة كل 5 دقائق
+    const intervalId = setInterval(measurementCycle, 5 * 60 * 1000);
+
+    // حفظ الـ interval للإلغاء لاحقاً
+    socket.measurementInterval = intervalId;
+
+    // إلغاء عند قطع الاتصال
+    socket.on('close', () => {
+      if (socket.measurementInterval) {
+        console.log(`🛑 [PERIODIC] إيقاف القياسات للجهاز ${socket.imei}`);
+        clearInterval(socket.measurementInterval);
       }
-      
-      // إرسال الرد
-      const response = ProtocolBuilder.buildMultipleBasesResponse();
-      socket.write(response);
-      
-    } catch (err) {
-      logger.error('خطأ في معالجة LBS:', err.message);
-      console.error('❌ خطأ LBS:', err);
-    }
+    });
   }
 
   /**
@@ -529,22 +526,13 @@ class MessageHandlers {
         case 'MULTIPLE_BASES':
           await this.handleMultipleBases(parsedData, socket);
           break;
-        case 'LOCATION_REQUEST_ACK':
-        case 'SOS_ACK':
-        case 'HEART_RATE_TEST_ACK':
-        case 'BLOOD_PRESSURE_TEST_ACK':
-        case 'TEMPERATURE_TEST_ACK':
-        case 'OXYGEN_TEST_ACK':
-          // مجرد تأكيدات، لا حاجة لحفظها
-          console.log(`✅ تأكيد استلام: ${parsedData.type}`);
-          break;
         default:
+          console.warn(`⚠️ نوع رسالة غير معالج: ${parsedData.type}`);
           logger.warn(`نوع رسالة غير معالج: ${parsedData.type}`);
-          console.log(`⚠️ نوع رسالة غير معالج: ${parsedData.type}`);
       }
     } catch (err) {
+      console.error(`❌ خطأ في توجيه الرسالة:`, err.message);
       logger.error('خطأ في توجيه الرسالة:', err.message);
-      console.error('❌ خطأ في توجيه الرسالة:', err);
     }
   }
 }
