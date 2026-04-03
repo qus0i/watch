@@ -44,11 +44,10 @@ module.exports = {
     
     // أنواع القياسات المطلوبة
     measurements: {
-      heartRate: process.env.MEASURE_HEART_RATE !== 'false',       // قياس النبض (true افتراضياً)
-      bloodPressure: process.env.MEASURE_BLOOD_PRESSURE !== 'false', // قياس الضغط (true افتراضياً)
+      location: process.env.REQUEST_LOCATION !== 'false',           // طلب الموقع (true افتراضياً)
+      bloodPressure: process.env.MEASURE_BLOOD_PRESSURE !== 'false', // قياس الضغط + النبض معاً (true افتراضياً)
       temperature: process.env.MEASURE_TEMPERATURE !== 'false',     // قياس الحرارة (true افتراضياً)
       bloodOxygen: process.env.MEASURE_BLOOD_OXYGEN !== 'false',    // قياس الأكسجين (true افتراضياً)
-      location: process.env.REQUEST_LOCATION !== 'false',           // طلب الموقع (true افتراضياً)
     },
     
     // ⭐ التأخير بين كل أمر قياس (بالثواني)
