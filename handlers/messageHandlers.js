@@ -294,15 +294,25 @@ class MessageHandlers {
    * معالجة رسالة أبراج متعددة
    */
   static async handleMultipleBases(data, socket) {
-    try {
-      // مجرد رد بسيط
-      const response = ProtocolBuilder.buildMultipleBasesResponse();
-      socket.write(response);
-      
-    } catch (err) {
-      logger.error('خطأ في معالجة أبراج متعددة:', err.message);
-    }
+  try {
+    data.imei = socket.imei;
+    
+    if (!data.imei) return;
+
+    console.log(`📡 استقبال بيانات LBS من ${data.imei}`);
+    console.log(`   (موقع تقريبي من أبراج الشبكة)`);
+    
+    // حفظ بيانات LBS كموقع تقريبي
+    // TODO: يمكن تحويل LAC+CID إلى إحداثيات باستخدام OpenCellID API
+    
+    // إرسال الرد
+    const response = ProtocolBuilder.buildMultipleBasesResponse();
+    socket.write(response);
+    
+  } catch (err) {
+    logger.error('خطأ في معالجة أبراج متعددة:', err.message);
   }
+}
 
   /**
    * توجيه الرسالة للمعالج المناسب
