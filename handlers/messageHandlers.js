@@ -3,7 +3,8 @@ const db = require('../database/db');
 const ProtocolBuilder = require('../protocol/builder');
 
 /**
- * معالجات الرسائل - مع دعم محسّن لـ AP02
+ * معالجات الرسائل
+ * كل معالج يستقبل البيانات المحللة ويعالجها
  */
 
 class MessageHandlers {
@@ -14,17 +15,32 @@ class MessageHandlers {
   static async handleLogin(data, socket) {
     try {
       logger.info(`✅ تسجيل دخول ناجح: ${data.imei}`);
+      console.log(`✅ تم تسجيل IMEI: ${data.imei} للاتصال ${socket.clientId}`);
       
+      // حفظ أو تحديث الجهاز في قاعدة البيانات
       await db.getOrCreateDevice(data.imei);
+      
+      // حفظ IMEI في الـ socket للاستخدام لاحقاً
       socket.imei = data.imei;
       
+      // إرسال الرد
       const response = ProtocolBuilder.buildLoginResponse();
       socket.write(response);
       
       logger.debug(`📤 رد تسجيل الدخول: ${response}`);
+      console.log(`📤 رد تسجيل الدخول: ${response}`);
+      
+      // طلب موقع فوري بعد تسجيل الدخول
+      setTimeout(() => {
+        const locationRequest = ProtocolBuilder.buildLocationRequest(data.imei);
+        socket.write(locationRequest);
+        logger.info(`📍 طلب موقع فوري من ${data.imei}: ${locationRequest}`);
+        console.log(`📍 طلب موقع فوري من ${data.imei}`);
+      }, 2000); // بعد ثانيتين
       
     } catch (err) {
       logger.error('خطأ في معالجة تسجيل الدخول:', err.message);
+      console.error('❌ خطأ في معالجة تسجيل الدخول:', err);
     }
   }
 
@@ -33,48 +49,41 @@ class MessageHandlers {
    */
   static async handleLocation(data, socket) {
     try {
+      // إضافة IMEI من السياق
       data.imei = socket.imei;
       
       if (!data.imei) {
         logger.warn('رسالة موقع بدون IMEI محدد');
+        console.log('⚠️ رسالة موقع بدون IMEI');
         return;
       }
 
-      await db.saveLocation(data);
+      console.log(`\n💾 حفظ موقع للجهاز ${data.imei}:`);
+      console.log(`   الإحداثيات: ${data.latitude}, ${data.longitude}`);
+      console.log(`   GPS صحيح: ${data.gpsValid}`);
+      console.log(`   البطارية: ${data.batteryLevel}%`);
+
+      // حفظ في قاعدة البيانات
+      const saved = await db.saveLocation(data);
       
+      if (saved) {
+        console.log(`✅ تم حفظ الموقع بنجاح في قاعدة البيانات`);
+      } else {
+        console.log(`❌ فشل حفظ الموقع في قاعدة البيانات`);
+      }
+      
+      // إرسال الرد
       const response = ProtocolBuilder.buildLocationResponse();
       socket.write(response);
       
     } catch (err) {
       logger.error('خطأ في معالجة الموقع:', err.message);
+      console.error('❌ خطأ في معالجة الموقع:', err);
     }
   }
 
   /**
-   * ⭐ معالجة رسالة أبراج متعددة (AP02) - محسّن
-   */
-  static async handleMultipleBases(data, socket) {
-    try {
-      data.imei = socket.imei;
-      
-      if (!data.imei) {
-        logger.warn('رسالة AP02 بدون IMEI محدد');
-        return;
-      }
-
-      // حفظ الموقع باستخدام OpenCellID
-      await db.saveMultipleBasesLocation(data);
-      
-      const response = ProtocolBuilder.buildMultipleBasesResponse();
-      socket.write(response);
-      
-    } catch (err) {
-      logger.error('خطأ في معالجة AP02:', err.message);
-    }
-  }
-
-  /**
-   * معالجة Heartbeat
+   * معالجة رسالة Heartbeat
    */
   static async handleHeartbeat(data, socket) {
     try {
@@ -82,12 +91,18 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
+      console.log(`💓 Heartbeat من ${data.imei} - بطارية: ${data.batteryLevel}%`);
+
+      // تحديث آخر اتصال
       await db.getOrCreateDevice(data.imei);
       
+      // تحديث الخطوات اليومية
       if (data.stepCount) {
         await db.updateDailySteps(data.imei, data.stepCount, data.rollFrequency);
+        console.log(`   الخطوات: ${data.stepCount}`);
       }
       
+      // إرسال الرد
       const response = ProtocolBuilder.buildHeartbeatResponse();
       socket.write(response);
       
@@ -97,7 +112,7 @@ class MessageHandlers {
   }
 
   /**
-   * معالجة إنذار
+   * معالجة رسالة إنذار
    */
   static async handleAlarm(data, socket) {
     try {
@@ -105,8 +120,12 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
+      console.log(`🚨 إنذار من ${data.imei} - النوع: ${data.alertType}`);
+
+      // حفظ الموقع
       await db.saveLocation(data);
       
+      // حفظ الإنذار
       await db.saveAlert({
         imei: data.imei,
         timestamp: data.timestamp,
@@ -115,8 +134,10 @@ class MessageHandlers {
         longitude: data.longitude,
       });
       
+      // TODO: إرسال إشعار للمستخدم (Push Notification / SMS / Email)
       logger.warn(`🚨 إنذار ${data.alertType} من ${data.imei}`);
       
+      // إرسال الرد
       const response = ProtocolBuilder.buildAlarmResponse();
       socket.write(response);
       
@@ -126,7 +147,7 @@ class MessageHandlers {
   }
 
   /**
-   * معالجة قياس النبض
+   * معالجة رسالة قياس النبض
    */
   static async handleHeartRate(data, socket) {
     try {
@@ -134,21 +155,32 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
-      await db.saveHealthData({
+      console.log(`\n❤️ استقبال نبض القلب:`);
+      console.log(`   IMEI: ${data.imei}`);
+      console.log(`   النبض: ${data.heartRate} bpm`);
+
+      const saved = await db.saveHealthData({
         imei: data.imei,
         heartRate: data.heartRate,
       });
+      
+      if (saved) {
+        console.log(`✅ تم حفظ نبض القلب بنجاح`);
+      } else {
+        console.log(`❌ فشل حفظ نبض القلب`);
+      }
       
       const response = ProtocolBuilder.buildHeartRateResponse();
       socket.write(response);
       
     } catch (err) {
       logger.error('خطأ في معالجة النبض:', err.message);
+      console.error('❌ خطأ في معالجة النبض:', err);
     }
   }
 
   /**
-   * معالجة النبض وضغط الدم
+   * معالجة رسالة النبض وضغط الدم
    */
   static async handleHeartRateBP(data, socket) {
     try {
@@ -156,23 +188,35 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
-      await db.saveHealthData({
+      console.log(`\n💉 استقبال بيانات ضغط ونبض:`);
+      console.log(`   IMEI: ${data.imei}`);
+      console.log(`   نبض: ${data.heartRate} bpm`);
+      console.log(`   ضغط: ${data.systolic}/${data.diastolic} mmHg`);
+
+      const saved = await db.saveHealthData({
         imei: data.imei,
         heartRate: data.heartRate,
         systolic: data.systolic,
         diastolic: data.diastolic,
       });
       
+      if (saved) {
+        console.log(`✅ تم حفظ الضغط والنبض بنجاح`);
+      } else {
+        console.log(`❌ فشل حفظ الضغط والنبض`);
+      }
+      
       const response = ProtocolBuilder.buildHeartRateBPResponse();
       socket.write(response);
       
     } catch (err) {
       logger.error('خطأ في معالجة النبض والضغط:', err.message);
+      console.error('❌ خطأ في معالجة النبض والضغط:', err);
     }
   }
 
   /**
-   * معالجة القياسات الكاملة
+   * معالجة رسالة القياسات الكاملة
    */
   static async handleFullHealth(data, socket) {
     try {
@@ -180,7 +224,14 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
-      await db.saveHealthData({
+      console.log(`\n📊 استقبال قياسات كاملة:`);
+      console.log(`   IMEI: ${data.imei}`);
+      console.log(`   نبض: ${data.heartRate} bpm`);
+      console.log(`   ضغط: ${data.systolic}/${data.diastolic} mmHg`);
+      console.log(`   أكسجين: ${data.spo2}%`);
+      console.log(`   سكر: ${data.bloodSugar}`);
+
+      const saved = await db.saveHealthData({
         imei: data.imei,
         heartRate: data.heartRate,
         systolic: data.systolic,
@@ -189,16 +240,23 @@ class MessageHandlers {
         bloodSugar: data.bloodSugar,
       });
       
+      if (saved) {
+        console.log(`✅ تم حفظ القياسات الكاملة بنجاح`);
+      } else {
+        console.log(`❌ فشل حفظ القياسات الكاملة`);
+      }
+      
       const response = ProtocolBuilder.buildFullHealthResponse();
       socket.write(response);
       
     } catch (err) {
       logger.error('خطأ في معالجة القياسات الكاملة:', err.message);
+      console.error('❌ خطأ في معالجة القياسات الكاملة:', err);
     }
   }
 
   /**
-   * معالجة الحرارة
+   * معالجة رسالة الحرارة
    */
   static async handleTemperature(data, socket) {
     try {
@@ -206,29 +264,43 @@ class MessageHandlers {
       
       if (!data.imei) return;
 
-      await db.saveHealthData({
+      console.log(`\n🌡️ استقبال حرارة الجسم:`);
+      console.log(`   IMEI: ${data.imei}`);
+      console.log(`   الحرارة: ${data.temperature}°C`);
+      console.log(`   البطارية: ${data.batteryLevel}%`);
+
+      const saved = await db.saveHealthData({
         imei: data.imei,
         temperature: data.temperature,
         batteryLevel: data.batteryLevel,
       });
+      
+      if (saved) {
+        console.log(`✅ تم حفظ الحرارة بنجاح`);
+      } else {
+        console.log(`❌ فشل حفظ الحرارة`);
+      }
       
       const response = ProtocolBuilder.buildTemperatureResponse();
       socket.write(response);
       
     } catch (err) {
       logger.error('خطأ في معالجة الحرارة:', err.message);
+      console.error('❌ خطأ في معالجة الحرارة:', err);
     }
   }
 
   /**
-   * معالجة تأكيد الأمر
+   * معالجة رسالة أبراج متعددة
    */
-  static async handleCommandAck(data, socket) {
+  static async handleMultipleBases(data, socket) {
     try {
-      logger.debug(`✅ تأكيد استلام أمر: ${data.commandType}`);
-      // لا حاجة لرد
+      // مجرد رد بسيط
+      const response = ProtocolBuilder.buildMultipleBasesResponse();
+      socket.write(response);
+      
     } catch (err) {
-      logger.error('خطأ في معالجة تأكيد الأمر:', err.message);
+      logger.error('خطأ في معالجة أبراج متعددة:', err.message);
     }
   }
 
@@ -245,9 +317,6 @@ class MessageHandlers {
           break;
         case 'LOCATION':
           await this.handleLocation(parsedData, socket);
-          break;
-        case 'MULTIPLE_BASES':
-          await this.handleMultipleBases(parsedData, socket);
           break;
         case 'HEARTBEAT':
           await this.handleHeartbeat(parsedData, socket);
@@ -267,14 +336,16 @@ class MessageHandlers {
         case 'TEMPERATURE':
           await this.handleTemperature(parsedData, socket);
           break;
-        case 'COMMAND_ACK':
-          await this.handleCommandAck(parsedData, socket);
+        case 'MULTIPLE_BASES':
+          await this.handleMultipleBases(parsedData, socket);
           break;
         default:
           logger.warn(`نوع رسالة غير معالج: ${parsedData.type}`);
+          console.log(`⚠️ نوع رسالة غير معالج: ${parsedData.type}`);
       }
     } catch (err) {
       logger.error('خطأ في توجيه الرسالة:', err.message);
+      console.error('❌ خطأ في توجيه الرسالة:', err);
     }
   }
 }
