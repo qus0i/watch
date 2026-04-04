@@ -280,12 +280,21 @@ class MessageHandlers {
 
       // تحقق من القيمة
       if (data.heartRate && data.heartRate > 0 && data.heartRate < 200) {
-        await db.saveHealthData({
-          imei: data.imei,
-          timestamp: new Date(),
-          heartRate: data.heartRate,
-        });
-        console.log(`✅ تم حفظ قياس النبض: ${data.heartRate} bpm`);
+        // ⭐ إذا في دورة نشطة — حدّث نفس السطر
+        if (socket.currentHealthRowId) {
+          await db.updateHealthCycleRow(socket.currentHealthRowId, {
+            heartRate: data.heartRate,
+          });
+          console.log(`✅ تم تحديث النبض في السطر ${socket.currentHealthRowId}: ${data.heartRate} bpm`);
+        } else {
+          // خارج الدورة — أنشئ سطر جديد
+          await db.saveHealthData({
+            imei: data.imei,
+            timestamp: new Date(),
+            heartRate: data.heartRate,
+          });
+          console.log(`✅ تم حفظ قياس النبض (خارج الدورة): ${data.heartRate} bpm`);
+        }
       } else {
         console.warn(`⚠️ قياس نبض غير صحيح: ${data.heartRate}`);
       }
@@ -317,14 +326,25 @@ class MessageHandlers {
       const validBP = data.systolic && data.systolic > 0 && data.systolic < 250;
 
       if (validHR || validBP) {
-        await db.saveHealthData({
-          imei: data.imei,
-          timestamp: new Date(),
-          heartRate: validHR ? data.heartRate : null,
-          systolic: validBP ? data.systolic : null,
-          diastolic: validBP ? data.diastolic : null,
-        });
-        console.log(`✅ تم حفظ قياس النبض والضغط`);
+        const updateData = {};
+        if (validHR) updateData.heartRate = data.heartRate;
+        if (validBP) {
+          updateData.systolic = data.systolic;
+          updateData.diastolic = data.diastolic;
+        }
+
+        // ⭐ إذا في دورة نشطة — حدّث نفس السطر
+        if (socket.currentHealthRowId) {
+          await db.updateHealthCycleRow(socket.currentHealthRowId, updateData);
+          console.log(`✅ تم تحديث النبض والضغط في السطر ${socket.currentHealthRowId}`);
+        } else {
+          await db.saveHealthData({
+            imei: data.imei,
+            timestamp: new Date(),
+            ...updateData,
+          });
+          console.log(`✅ تم حفظ قياس النبض والضغط (خارج الدورة)`);
+        }
       } else {
         console.warn(`⚠️ قياسات غير صحيحة - تم تجاهلها`);
       }
@@ -405,13 +425,22 @@ class MessageHandlers {
 
       // تحقق من القيمة
       if (data.temperature && data.temperature > 30 && data.temperature < 45) {
-        await db.saveHealthData({
-          imei: data.imei,
-          timestamp: new Date(),
-          temperature: data.temperature,
-          batteryLevel: data.batteryLevel,
-        });
-        console.log(`✅ تم حفظ قياس الحرارة: ${data.temperature}°C`);
+        // ⭐ إذا في دورة نشطة — حدّث نفس السطر
+        if (socket.currentHealthRowId) {
+          await db.updateHealthCycleRow(socket.currentHealthRowId, {
+            temperature: data.temperature,
+            batteryLevel: data.batteryLevel,
+          });
+          console.log(`✅ تم تحديث الحرارة في السطر ${socket.currentHealthRowId}: ${data.temperature}°C`);
+        } else {
+          await db.saveHealthData({
+            imei: data.imei,
+            timestamp: new Date(),
+            temperature: data.temperature,
+            batteryLevel: data.batteryLevel,
+          });
+          console.log(`✅ تم حفظ قياس الحرارة (خارج الدورة): ${data.temperature}°C`);
+        }
       } else {
         console.warn(`⚠️ قياس حرارة غير صحيح: ${data.temperature}°C`);
       }
@@ -426,8 +455,8 @@ class MessageHandlers {
   }
 
   /**
-   * ⭐ بدء القياسات الدورية - مُصلح بتأخير 60 ثانية بين كل قياس
-   * الساعة تحتاج 30-60 ثانية لكل قياس طبي
+   * ⭐ بدء القياسات الدورية - مُصلح: سطر واحد لكل دورة + تحديث last_health_check
+   * كل دورة: إنشاء سطر → تحديثه مع كل قياس → تحديث last_health_check عند الانتهاء
    */
   static startPeriodicMeasurements(socket) {
     if (!socket.imei) {
@@ -443,8 +472,10 @@ class MessageHandlers {
     console.log(`   🔁 الفاصل بين الدورات: ${intervalMinutes} دقائق`);
 
     /**
-     * تنفيذ دورة قياسات كاملة بشكل متسلسل
-     * كل قياس ينتظر delaySeconds قبل القياس التالي
+     * تنفيذ دورة قياسات كاملة:
+     * 1. إنشاء سطر جديد في health_data
+     * 2. إرسال أوامر القياس (كل قياس يحدّث نفس السطر)
+     * 3. عند الانتهاء — تحديث last_health_check
      */
     const measurementCycle = async () => {
       if (!socket.writable || socket.destroyed) {
@@ -462,6 +493,13 @@ class MessageHandlers {
       const delayMs = delaySeconds * 1000;
 
       try {
+        // ⭐ إنشاء سطر صحي جديد لهذه الدورة
+        const healthRowId = await db.createHealthCycleRow(socket.imei);
+        if (healthRowId) {
+          socket.currentHealthRowId = healthRowId;
+          console.log(`📋 [PERIODIC] سطر صحي جديد ID: ${healthRowId}`);
+        }
+
         // 1. طلب موقع أولاً
         if (socket.writable && !socket.destroyed) {
           const journalNo = ProtocolBuilder.generateJournalNo();
@@ -510,10 +548,22 @@ class MessageHandlers {
           socket.write(spo2Cmd);
         }
 
+        // ⭐ انتظار إضافي للأكسجين ثم تحديث last_health_check
+        await delay(delayMs);
+
+        if (healthRowId) {
+          await db.finalizeHealthCycle(socket.imei, healthRowId);
+          console.log(`✅ [PERIODIC] تم تحديث last_health_check من السطر ${healthRowId}`);
+        }
+
+        // مسح الـ currentHealthRowId لأن الدورة انتهت
+        socket.currentHealthRowId = null;
+
         console.log(`✅ [PERIODIC] ═══ انتهت دورة القياسات للجهاز ${socket.imei} ═══\n`);
 
       } catch (err) {
         console.error(`❌ [PERIODIC] خطأ في دورة القياسات: ${err.message}`);
+        socket.currentHealthRowId = null;
       }
     };
 
