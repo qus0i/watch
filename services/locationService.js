@@ -6,11 +6,11 @@ const logger = require('../utils/logger');
 /**
  * خدمة تحديد الموقع من بيانات الأبراج والـ WiFi
  * تستخدم عدة APIs كـ fallback:
- * 1. OpenCellID (مجاني)
- * 2. OpenCellID مع eNodeB مستخرج (للـ LTE)
- * 3. UnwiredLabs (مجاني محدود)
- * 4. Google Geolocation API (دقيق جداً)
- * 5. Combain (100 طلب مجاني)
+ * 1. ⭐ Google Geolocation API (الأدق - الأولوية الأولى)
+ * 2. UnwiredLabs (cell + WiFi)
+ * 3. OpenCellID (مجاني)
+ * 4. Combain
+ * 5. WiFi-only عبر UnwiredLabs
  * 6. radiocells.org (مجاني بالكامل)
  */
 
@@ -19,6 +19,7 @@ class LocationService {
   /**
    * تحويل بيانات الأبراج/WiFi إلى إحداثيات
    * يجرب عدة APIs حتى ينجح أحدها
+   * ⭐ Google أولاً لأنه الأدق
    */
   static async resolveLocation(mcc, mnc, lac, cellId, wifiData = []) {
     // التحقق من صحة البيانات
@@ -35,8 +36,37 @@ class LocationService {
       console.log(`📡 [LOCATION_SVC] LTE detected: eNodeB=${eNodeBId}, localCell=${localCellId}, fullCID=${cellId}`);
     }
 
-    // ═══ محاولة 1: OpenCellID مع الـ CID الكامل ═══
+    console.log(`🔍 [LOCATION_SVC] بدء تحديد الموقع: MCC=${mcc}, MNC=${mnc}, LAC=${lac}, CID=${cellId}, WiFi=${wifiData.length} networks`);
+
+    // ═══ محاولة 1: ⭐ Google Geolocation API (الأدق والأشمل) ═══
     try {
+      console.log(`🌐 [LOCATION_SVC] ═══ محاولة 1: Google Geolocation API ═══`);
+      const result = await this.resolveViaGoogle(mcc, mnc, lac, cellId, wifiData);
+      if (result) {
+        console.log(`✅ [LOCATION_SVC] ✨ Google نجح! ${result.latitude}, ${result.longitude} (دقة: ${result.accuracy}م)`);
+        return result;
+      } else {
+        console.log(`⚠️ [LOCATION_SVC] Google لم يرجع نتيجة`);
+      }
+    } catch (err) {
+      console.log(`⚠️ [LOCATION_SVC] Google خطأ: ${err.message}`);
+    }
+
+    // ═══ محاولة 2: UnwiredLabs API (cell + WiFi) ═══
+    try {
+      console.log(`🌐 [LOCATION_SVC] ═══ محاولة 2: UnwiredLabs ═══`);
+      const result = await this.resolveViaUnwiredLabs(mcc, mnc, lac, cellId, wifiData);
+      if (result) {
+        console.log(`✅ [LOCATION_SVC] UnwiredLabs: ${result.latitude}, ${result.longitude}`);
+        return result;
+      }
+    } catch (err) {
+      console.log(`⚠️ [LOCATION_SVC] UnwiredLabs خطأ: ${err.message}`);
+    }
+
+    // ═══ محاولة 3: OpenCellID مع الـ CID الكامل ═══
+    try {
+      console.log(`🌐 [LOCATION_SVC] ═══ محاولة 3: OpenCellID (full CID) ═══`);
       const result = await this.resolveViaOpenCellID(mcc, mnc, lac, cellId, isLTE ? 'lte' : 'gsm');
       if (result) {
         console.log(`✅ [LOCATION_SVC] OpenCellID (full CID): ${result.latitude}, ${result.longitude} (دقة: ${result.accuracy}م)`);
@@ -46,7 +76,7 @@ class LocationService {
       console.log(`⚠️ [LOCATION_SVC] OpenCellID (full CID) خطأ: ${err.message}`);
     }
 
-    // ═══ محاولة 2: OpenCellID مع أنواع radio مختلفة ═══
+    // ═══ محاولة 4: OpenCellID مع أنواع radio مختلفة ═══
     if (isLTE) {
       for (const radio of ['umts', 'gsm']) {
         try {
@@ -61,7 +91,7 @@ class LocationService {
       }
     }
 
-    // ═══ محاولة 3: OpenCellID مع eNodeB ID (بدل CID الكامل) ═══
+    // ═══ محاولة 5: OpenCellID مع eNodeB ID ═══
     if (isLTE && eNodeBId) {
       try {
         console.log(`🌐 [LOCATION_SVC] OpenCellID (eNodeB): trying CID=${eNodeBId} instead of ${cellId}`);
@@ -73,28 +103,6 @@ class LocationService {
       } catch (err) {
         // silent
       }
-    }
-
-    // ═══ محاولة 4: Google Geolocation API (الأدق) ═══
-    try {
-      const result = await this.resolveViaGoogle(mcc, mnc, lac, cellId, wifiData);
-      if (result) {
-        console.log(`✅ [LOCATION_SVC] Google: ${result.latitude}, ${result.longitude} (دقة: ${result.accuracy}م)`);
-        return result;
-      }
-    } catch (err) {
-      console.log(`⚠️ [LOCATION_SVC] Google خطأ: ${err.message}`);
-    }
-
-    // ═══ محاولة 5: UnwiredLabs API (cell + WiFi) ═══
-    try {
-      const result = await this.resolveViaUnwiredLabs(mcc, mnc, lac, cellId, wifiData);
-      if (result) {
-        console.log(`✅ [LOCATION_SVC] UnwiredLabs: ${result.latitude}, ${result.longitude}`);
-        return result;
-      }
-    } catch (err) {
-      console.log(`⚠️ [LOCATION_SVC] UnwiredLabs خطأ: ${err.message}`);
     }
 
     // ═══ محاولة 6: UnwiredLabs مع eNodeB ID ═══
@@ -111,7 +119,7 @@ class LocationService {
       }
     }
 
-    // ═══ محاولة 7: WiFi-only عبر UnwiredLabs (بدون cell tower) ═══
+    // ═══ محاولة 7: WiFi-only عبر UnwiredLabs ═══
     if (wifiData && wifiData.length > 0) {
       try {
         console.log(`📶 [LOCATION_SVC] WiFi-only positioning: ${wifiData.length} networks`);
@@ -136,7 +144,7 @@ class LocationService {
       console.log(`⚠️ [LOCATION_SVC] Combain خطأ: ${err.message}`);
     }
 
-    console.log(`⚠️ [LOCATION_SVC] فشلت جميع المحاولات لتحويل الموقع`);
+    console.log(`❌ [LOCATION_SVC] فشلت جميع المحاولات لتحويل الموقع (8 محاولات)`);
     return null;
   }
 
@@ -191,7 +199,7 @@ class LocationService {
   }
 
   /**
-   * Google Geolocation API
+   * ⭐ Google Geolocation API
    * الأدق والأشمل - يدعم cell towers + WiFi معاً
    * يحتاج Google Maps API key مع تفعيل Geolocation API
    */
@@ -199,12 +207,18 @@ class LocationService {
     return new Promise((resolve, reject) => {
       const rawKey = config.locationServices?.google?.apiKey || process.env.GOOGLE_GEOLOCATION_KEY;
       
-      if (!rawKey) {
-        return resolve(null); // skip silently
+      // ⭐ تحقق مفصّل من المفتاح
+      if (!rawKey || rawKey.trim() === '') {
+        console.log(`❌ [GOOGLE] لا يوجد API key! تأكد من ضبط GOOGLE_GEOLOCATION_KEY`);
+        console.log(`   config value: "${config.locationServices?.google?.apiKey || 'EMPTY'}"`);
+        console.log(`   env value: "${process.env.GOOGLE_GEOLOCATION_KEY ? 'SET (' + process.env.GOOGLE_GEOLOCATION_KEY.substring(0, 10) + '...)' : 'NOT SET'}"`);
+        return resolve(null);
       }
 
       // تنظيف المفتاح من أي فراغات أو أحرف غير مرئية
       const apiKey = rawKey.trim().replace(/[^\x20-\x7E]/g, '');
+      
+      console.log(`🔑 [GOOGLE] API Key: ${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 4)} (length: ${apiKey.length})`);
 
       const isLTE = cellId > 65535;
       
@@ -230,53 +244,75 @@ class LocationService {
             macAddress: w.mac,
             signalStrength: w.signal ? -Math.abs(w.signal) : -50,
           }));
+        console.log(`📶 [GOOGLE] WiFi networks added: ${requestBody.wifiAccessPoints.length}`);
       }
 
       const postData = JSON.stringify(requestBody);
 
-      console.log(`🌐 [LOCATION_SVC] Google Geolocation request: MCC=${mcc}, MNC=${mnc}, LAC=${lac}, CID=${cellId}`);
+      console.log(`🌐 [GOOGLE] Request: MCC=${mcc}, MNC=${mnc}, LAC=${lac}, CID=${cellId}, radio=${isLTE ? 'lte' : 'gsm'}`);
+      console.log(`📦 [GOOGLE] Body: ${postData}`);
 
-      const encodedKey = encodeURIComponent(apiKey);
       const options = {
         hostname: 'www.googleapis.com',
         port: 443,
-        path: `/geolocation/v1/geolocate?key=${encodedKey}`,
+        path: `/geolocation/v1/geolocate?key=${apiKey}`,
         method: 'POST',
-        timeout: 10000,
+        timeout: 15000,
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(postData),
         },
       };
 
+      console.log(`🌐 [GOOGLE] URL: https://${options.hostname}${options.path.replace(apiKey, apiKey.substring(0, 10) + '...')}`);
+
       const req = https.request(options, (res) => {
         let data = '';
         res.on('data', chunk => data += chunk);
         res.on('end', () => {
           try {
+            console.log(`📨 [GOOGLE] Response status: ${res.statusCode}`);
+            console.log(`📨 [GOOGLE] Response body: ${data}`);
+
             const json = JSON.parse(data);
             
             if (json.location && json.location.lat && json.location.lng) {
+              console.log(`✅ [GOOGLE] نجح! lat=${json.location.lat}, lng=${json.location.lng}, accuracy=${json.accuracy}م`);
               resolve({
                 latitude: parseFloat(json.location.lat),
                 longitude: parseFloat(json.location.lng),
                 accuracy: json.accuracy || 0,
                 source: 'google',
               });
-            } else {
-              if (json.error) {
-                console.log(`⚠️ [LOCATION_SVC] Google error: ${json.error.message || JSON.stringify(json.error)}`);
+            } else if (json.error) {
+              console.log(`❌ [GOOGLE] API Error:`);
+              console.log(`   Code: ${json.error.code}`);
+              console.log(`   Message: ${json.error.message}`);
+              console.log(`   Status: ${json.error.status}`);
+              if (json.error.errors) {
+                json.error.errors.forEach((e, i) => {
+                  console.log(`   Error ${i}: domain=${e.domain}, reason=${e.reason}, message=${e.message}`);
+                });
               }
+              resolve(null);
+            } else {
+              console.log(`⚠️ [GOOGLE] رد غير متوقع: ${data}`);
               resolve(null);
             }
           } catch (parseErr) {
+            console.log(`❌ [GOOGLE] فشل تحليل الرد: ${parseErr.message}`);
+            console.log(`   Raw data: ${data.substring(0, 500)}`);
             reject(new Error(`فشل تحليل رد Google: ${parseErr.message}`));
           }
         });
       });
 
-      req.on('error', (err) => reject(err));
+      req.on('error', (err) => {
+        console.log(`❌ [GOOGLE] Network error: ${err.message}`);
+        reject(err);
+      });
       req.on('timeout', () => {
+        console.log(`❌ [GOOGLE] Timeout after 15 seconds`);
         req.destroy();
         reject(new Error('Google Geolocation timeout'));
       });
@@ -526,7 +562,6 @@ class LocationService {
   /**
    * WiFi-only positioning عبر UnwiredLabs
    * يستخدم بيانات WiFi فقط (بدون cell towers)
-   * مفيد لما البرج مش موجود في أي قاعدة بيانات
    */
   static resolveViaWifiOnly(wifiData) {
     return new Promise((resolve, reject) => {
