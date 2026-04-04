@@ -56,13 +56,36 @@ module.exports = {
     delayBetweenCommands: parseInt(process.env.DELAY_BETWEEN_COMMANDS) || 60,
   },
 
-  // ⭐ إعدادات خدمات تحديد الموقع (جديد)
+  // ⭐ إعدادات خدمات تحديد الموقع (محسّن - عدة مصادر كـ fallback)
   locationServices: {
-    // OpenCellID API (مجاني 100% - unlimited requests)
+    // المصدر 1: OpenCellID API (مجاني - crowdsourced)
     opencellid: {
       enabled: true,
       apiToken: process.env.OPENCELLID_TOKEN || 'pk.d85c81393cf2681894a4076dd87a04c7',
       apiUrl: 'https://opencellid.org/cell/get',
     },
+
+    // المصدر 2: Google Geolocation API (الأدق - يحتاج API key)
+    // أنشئ مفتاح: https://console.cloud.google.com/apis/credentials
+    // فعّل: Geolocation API
+    // مجاني: أول 40,000 طلب/شهر
+    google: {
+      apiKey: process.env.GOOGLE_GEOLOCATION_KEY || '',
+    },
+
+    // المصدر 3: UnwiredLabs (مجاني محدود)
+    // سجّل: https://unwiredlabs.com/
+    unwiredlabs: {
+      apiToken: process.env.UNWIREDLABS_TOKEN || '',
+    },
+
+    // المصدر 4: Combain (100 طلب مجاني)
+    // سجّل: https://portal.combain.com/
+    combain: {
+      apiKey: process.env.COMBAIN_API_KEY || '',
+    },
+
+    // المصدر 5: radiocells.org (مجاني بالكامل بدون API key)
+    // لا يحتاج إعدادات
   }
 };
