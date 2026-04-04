@@ -166,11 +166,14 @@ class LocationService {
    */
   static resolveViaGoogle(mcc, mnc, lac, cellId, wifiData = []) {
     return new Promise((resolve, reject) => {
-      const apiKey = config.locationServices?.google?.apiKey || process.env.GOOGLE_GEOLOCATION_KEY;
+      const rawKey = config.locationServices?.google?.apiKey || process.env.GOOGLE_GEOLOCATION_KEY;
       
-      if (!apiKey) {
+      if (!rawKey) {
         return resolve(null); // skip silently
       }
+
+      // تنظيف المفتاح من أي فراغات أو أحرف غير مرئية
+      const apiKey = rawKey.trim().replace(/[^\x20-\x7E]/g, '');
 
       const isLTE = cellId > 65535;
       
@@ -202,10 +205,11 @@ class LocationService {
 
       console.log(`🌐 [LOCATION_SVC] Google Geolocation request: MCC=${mcc}, MNC=${mnc}, LAC=${lac}, CID=${cellId}`);
 
+      const encodedKey = encodeURIComponent(apiKey);
       const options = {
         hostname: 'www.googleapis.com',
         port: 443,
-        path: `/geolocation/v1/geolocate?key=${apiKey}`,
+        path: `/geolocation/v1/geolocate?key=${encodedKey}`,
         method: 'POST',
         timeout: 10000,
         headers: {
