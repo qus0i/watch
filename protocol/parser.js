@@ -64,6 +64,8 @@ class ProtocolParser {
           return this.parseTemperatureAck(message);
         case 'APXZ':
           return this.parseOxygenAck(message);
+        case 'AP84':
+          return this.parseNotWearAck(message);
         default:
           logger.warn(`نوع أمر غير معروف: ${commandType}`);
           console.log(`⚠️ نوع أمر غير معروف: ${commandType}`);
@@ -204,21 +206,23 @@ class ProtocolParser {
    */
   static parseHeartbeatPacket(message) {
     try {
-      const data = message.substring(6, message.length - 1);
-      const parts = data.split(',');
+      // ⭐ إصلاح: الرسالة IWAP03,statusInfo,steps,roll# — نحتاج تخطي الفاصلة بعد AP03
+      const content = message.substring(2, message.length - 1); // بعد IW وقبل #
+      const allParts = content.split(',');
+      // allParts[0] = 'AP03', allParts[1] = statusInfo, allParts[2] = steps, allParts[3] = roll
 
-      const statusInfo = parts[0];
-      const gsmSignal = parseInt(statusInfo.substring(0, 3));
-      const satelliteCount = parseInt(statusInfo.substring(3, 6));
-      const batteryLevel = parseInt(statusInfo.substring(6, 9));
-      const fortificationState = parseInt(statusInfo.substring(10, 12));
-      const workingMode = parseInt(statusInfo.substring(12, 14));
+      const statusInfo = allParts[1] || '';
+      const gsmSignal = parseInt(statusInfo.substring(0, 3)) || 0;
+      const satelliteCount = parseInt(statusInfo.substring(3, 6)) || 0;
+      const batteryLevel = parseInt(statusInfo.substring(6, 9)) || 0;
+      const fortificationState = parseInt(statusInfo.substring(10, 12)) || 0;
+      const workingMode = parseInt(statusInfo.substring(12, 14)) || 0;
 
-      const stepCount = parseInt(parts[1] || 0);
-      const rollFrequency = parseInt(parts[2] || 0);
+      const stepCount = parseInt(allParts[2] || 0);
+      const rollFrequency = parseInt(allParts[3] || 0);
 
       logger.debug(`💓 نبضة قلب: بطارية ${batteryLevel}% | خطوات ${stepCount}`);
-      console.log(`💓 Heartbeat - بطارية: ${batteryLevel}%`);
+      console.log(`💓 Heartbeat - بطارية: ${batteryLevel}%, خطوات: ${stepCount}`);
 
       return {
         type: 'HEARTBEAT',
@@ -510,6 +514,22 @@ class ProtocolParser {
       console.log(`✅ الساعة بدأت قياس الأكسجين`);
       return {
         type: 'OXYGEN_TEST_ACK',
+        imei: null,
+        timestamp: new Date(),
+      };
+    } catch (err) {
+      return null;
+    }
+  }
+
+  /**
+   * تحليل رد على أمر NOT_WEAR (AP84)
+   */
+  static parseNotWearAck(message) {
+    try {
+      console.log(`✅ الساعة استلمت أمر NOT_WEAR`);
+      return {
+        type: 'NOT_WEAR_ACK',
         imei: null,
         timestamp: new Date(),
       };

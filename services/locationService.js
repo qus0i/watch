@@ -65,9 +65,12 @@ class LocationService {
       }
 
       const token = opencellConfig.apiToken;
-      const url = `https://opencellid.org/cell/get?key=${token}&mcc=${mcc}&mnc=${mnc}&lac=${lac}&cellid=${cellId}&format=json`;
+      
+      // ⭐ Cell IDs > 65535 are LTE (4G) towers - need radio=lte parameter
+      const radioType = cellId > 65535 ? 'lte' : 'gsm';
+      const url = `https://opencellid.org/cell/get?key=${token}&mcc=${mcc}&mnc=${mnc}&lac=${lac}&cellid=${cellId}&radio=${radioType}&format=json`;
 
-      console.log(`🌐 [LOCATION_SVC] OpenCellID request: MCC=${mcc}, MNC=${mnc}, LAC=${lac}, CID=${cellId}`);
+      console.log(`🌐 [LOCATION_SVC] OpenCellID request: MCC=${mcc}, MNC=${mnc}, LAC=${lac}, CID=${cellId}, radio=${radioType}`);
 
       const req = https.get(url, { timeout: 10000 }, (res) => {
         let data = '';

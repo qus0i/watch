@@ -590,6 +590,9 @@ class MessageHandlers {
         case 'SOS_ACK':
           console.log(`✅ [ACK] الساعة استلمت أمر SOS`);
           break;
+        case 'NOT_WEAR_ACK':
+          console.log(`✅ [ACK] الساعة استلمت أمر NOT_WEAR`);
+          break;
         case 'UNKNOWN':
           console.warn(`⚠️ رسالة غير معروفة: ${parsedData.commandType}`);
           break;
