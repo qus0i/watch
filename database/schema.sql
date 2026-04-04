@@ -165,37 +165,6 @@ CREATE TABLE IF NOT EXISTS voice_messages (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- جدول آخر قراءة صحية كاملة لكل جهاز (يتم تحديثه عند انتهاء كل دورة)
-CREATE TABLE IF NOT EXISTS last_health_check (
-    id SERIAL PRIMARY KEY,
-    device_id INTEGER REFERENCES devices(id) ON DELETE CASCADE,
-    imei VARCHAR(15) UNIQUE NOT NULL,
-    heart_rate INTEGER,
-    blood_pressure_systolic INTEGER,
-    blood_pressure_diastolic INTEGER,
-    spo2 INTEGER,
-    body_temperature DECIMAL(4, 2),
-    battery_level INTEGER,
-    cycle_health_id INTEGER, -- الـ ID في جدول health_data لهذه الدورة
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- جدول آخر موقع لكل جهاز (يتم تحديثه مع كل موقع جديد)
-CREATE TABLE IF NOT EXISTS last_location (
-    id SERIAL PRIMARY KEY,
-    device_id INTEGER REFERENCES devices(id) ON DELETE CASCADE,
-    imei VARCHAR(15) UNIQUE NOT NULL,
-    latitude DECIMAL(10, 7),
-    longitude DECIMAL(10, 7),
-    gps_valid BOOLEAN,
-    mcc INTEGER,
-    mnc INTEGER,
-    lac INTEGER,
-    cell_id INTEGER,
-    battery_level INTEGER,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
 -- Views للاستعلامات السريعة
 
 -- آخر موقع لكل جهاز

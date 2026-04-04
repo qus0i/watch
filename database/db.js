@@ -98,7 +98,7 @@ async function getOrCreateDevice(imei) {
   }
 }
 
-// دالة لحفظ موقع GPS + تحديث last_location
+// دالة لحفظ موقع GPS
 async function saveLocation(data) {
   const client = await pool.connect();
   try {
@@ -140,23 +140,6 @@ async function saveLocation(data) {
     const insertedId = result.rows[0].id;
     console.log(`✅ [DB] تم حفظ الموقع - ID: ${insertedId}`);
     logger.info(`تم حفظ موقع للجهاز ${data.imei} (GPS: ${data.gpsValid}, Lat: ${data.latitude}, Lng: ${data.longitude})`);
-
-    // ⭐ تحديث last_location
-    await client.query(`
-      INSERT INTO last_location (device_id, imei, latitude, longitude, gps_valid, mcc, mnc, lac, cell_id, battery_level, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
-      ON CONFLICT (imei) DO UPDATE SET
-        latitude = $3, longitude = $4, gps_valid = $5,
-        mcc = $6, mnc = $7, lac = $8, cell_id = $9,
-        battery_level = $10, updated_at = NOW()
-    `, [
-      deviceId, data.imei,
-      data.latitude || 0, data.longitude || 0, data.gpsValid || false,
-      data.mcc || 0, data.mnc || 0, data.lac || 0, data.cellId || 0,
-      data.batteryLevel || 0
-    ]);
-    console.log(`✅ [DB] تم تحديث last_location`);
-
     return true;
 
   } catch (err) {
@@ -169,146 +152,7 @@ async function saveLocation(data) {
 }
 
 /**
- * ⭐ إنشاء سطر جديد لدورة صحية (يُستدعى في بداية كل دورة)
- * يرجع الـ ID الجديد لنستخدمه في التحديثات اللاحقة
- */
-async function createHealthCycleRow(imei) {
-  const client = await pool.connect();
-  try {
-    const deviceId = await getOrCreateDevice(imei);
-    const result = await client.query(`
-      INSERT INTO health_data (
-        device_id, imei, timestamp,
-        heart_rate, blood_pressure_systolic, 
-        blood_pressure_diastolic, spo2, blood_sugar, 
-        body_temperature, battery_level
-      ) VALUES ($1, $2, NOW(), NULL, NULL, NULL, NULL, NULL, NULL, NULL)
-      RETURNING id
-    `, [deviceId, imei]);
-
-    const rowId = result.rows[0].id;
-    console.log(`✅ [DB] تم إنشاء سطر صحي جديد - ID: ${rowId}`);
-    return rowId;
-  } catch (err) {
-    console.error(`❌ [DB] خطأ في إنشاء سطر صحي:`, err.message);
-    return null;
-  } finally {
-    client.release();
-  }
-}
-
-/**
- * ⭐ تحديث سطر صحي موجود (يُستدعى عند وصول كل قياس)
- */
-async function updateHealthCycleRow(rowId, data) {
-  const client = await pool.connect();
-  try {
-    const setClauses = [];
-    const values = [];
-    let paramIndex = 1;
-
-    if (data.heartRate !== undefined && data.heartRate !== null) {
-      setClauses.push(`heart_rate = $${paramIndex++}`);
-      values.push(data.heartRate);
-    }
-    if (data.systolic !== undefined && data.systolic !== null) {
-      setClauses.push(`blood_pressure_systolic = $${paramIndex++}`);
-      values.push(data.systolic);
-    }
-    if (data.diastolic !== undefined && data.diastolic !== null) {
-      setClauses.push(`blood_pressure_diastolic = $${paramIndex++}`);
-      values.push(data.diastolic);
-    }
-    if (data.spo2 !== undefined && data.spo2 !== null) {
-      setClauses.push(`spo2 = $${paramIndex++}`);
-      values.push(data.spo2);
-    }
-    if (data.temperature !== undefined && data.temperature !== null) {
-      setClauses.push(`body_temperature = $${paramIndex++}`);
-      values.push(data.temperature);
-    }
-    if (data.batteryLevel !== undefined && data.batteryLevel !== null) {
-      setClauses.push(`battery_level = $${paramIndex++}`);
-      values.push(data.batteryLevel);
-    }
-
-    if (setClauses.length === 0) {
-      console.warn(`⚠️ [DB] لا توجد قيم لتحديث السطر ${rowId}`);
-      return false;
-    }
-
-    values.push(rowId);
-    const query = `UPDATE health_data SET ${setClauses.join(', ')} WHERE id = $${paramIndex}`;
-    
-    console.log(`\n💾 [DB] تحديث سطر صحي ID: ${rowId}`);
-    console.log(`   HR: ${data.heartRate || '-'}, BP: ${data.systolic || '-'}/${data.diastolic || '-'}, SpO2: ${data.spo2 || '-'}, Temp: ${data.temperature || '-'}`);
-    
-    await client.query(query, values);
-    console.log(`✅ [DB] تم تحديث السطر الصحي - ID: ${rowId}`);
-    return true;
-
-  } catch (err) {
-    console.error(`❌ [DB] خطأ في تحديث السطر الصحي:`, err.message);
-    return false;
-  } finally {
-    client.release();
-  }
-}
-
-/**
- * ⭐ تحديث last_health_check عند انتهاء الدورة
- */
-async function finalizeHealthCycle(imei, rowId) {
-  const client = await pool.connect();
-  try {
-    const deviceId = await getOrCreateDevice(imei);
-    
-    // قراءة بيانات السطر المكتمل
-    const healthRow = await client.query('SELECT * FROM health_data WHERE id = $1', [rowId]);
-    if (healthRow.rows.length === 0) {
-      console.warn(`⚠️ [DB] السطر ${rowId} غير موجود`);
-      return false;
-    }
-    
-    const row = healthRow.rows[0];
-    
-    // UPSERT في last_health_check
-    await client.query(`
-      INSERT INTO last_health_check (
-        device_id, imei, heart_rate, blood_pressure_systolic,
-        blood_pressure_diastolic, spo2, body_temperature, 
-        battery_level, cycle_health_id, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
-      ON CONFLICT (imei) DO UPDATE SET
-        heart_rate = COALESCE($3, last_health_check.heart_rate),
-        blood_pressure_systolic = COALESCE($4, last_health_check.blood_pressure_systolic),
-        blood_pressure_diastolic = COALESCE($5, last_health_check.blood_pressure_diastolic),
-        spo2 = COALESCE($6, last_health_check.spo2),
-        body_temperature = COALESCE($7, last_health_check.body_temperature),
-        battery_level = COALESCE($8, last_health_check.battery_level),
-        cycle_health_id = $9,
-        updated_at = NOW()
-    `, [
-      deviceId, imei,
-      row.heart_rate, row.blood_pressure_systolic,
-      row.blood_pressure_diastolic, row.spo2, row.body_temperature,
-      row.battery_level, rowId
-    ]);
-
-    console.log(`✅ [DB] تم تحديث last_health_check للجهاز ${imei}`);
-    console.log(`   HR: ${row.heart_rate || '-'}, BP: ${row.blood_pressure_systolic || '-'}/${row.blood_pressure_diastolic || '-'}, SpO2: ${row.spo2 || '-'}, Temp: ${row.body_temperature || '-'}`);
-    return true;
-
-  } catch (err) {
-    console.error(`❌ [DB] خطأ في تحديث last_health_check:`, err.message);
-    return false;
-  } finally {
-    client.release();
-  }
-}
-
-/**
- * ⭐ حفظ القياسات الصحية - للاستخدام خارج الدورات (fallback)
+ * ⭐ حفظ القياسات الصحية - مُصلح مع timestamp صريح
  */
 async function saveHealthData(data) {
   const client = await pool.connect();
@@ -341,11 +185,14 @@ async function saveHealthData(data) {
 
     const insertedId = result.rows[0].id;
     console.log(`✅ [DB] تم حفظ القياسات الصحية - ID: ${insertedId}`);
-    return insertedId;
+    logger.info(`تم حفظ قياسات صحية للجهاز ${data.imei} (HR: ${data.heartRate || '-'}, BP: ${data.systolic || '-'}/${data.diastolic || '-'})`);
+    return true;
 
   } catch (err) {
     console.error(`❌ [DB] خطأ في حفظ القياسات الصحية:`, err.message);
-    return null;
+    console.error(`   Error Code: ${err.code}`);
+    logger.error('خطأ في حفظ القياسات الصحية:', err.message);
+    return false;
   } finally {
     client.release();
   }
@@ -414,6 +261,188 @@ async function updateDailySteps(imei, steps, rollFrequency) {
   }
 }
 
+/**
+ * ⭐ Upsert صحي - دورة القياسات
+ * إذا cycleId = null → INSERT سطر جديد وإرجاع الـ ID
+ * إذا cycleId موجود → UPDATE السطر نفسه بالقيم الجديدة فقط (بدون مسح القديمة)
+ */
+async function upsertHealthData(data, cycleId = null) {
+  const client = await pool.connect();
+  try {
+    const deviceId = await getOrCreateDevice(data.imei);
+
+    if (!cycleId) {
+      // ═══ INSERT سطر جديد (أول قياس بالدورة) ═══
+      console.log(`\n💾 [DB] ═══ دورة صحية جديدة للجهاز ${data.imei} ═══`);
+      console.log(`   INSERT: HR=${data.heartRate || '-'}, BP=${data.systolic || '-'}/${data.diastolic || '-'}, SpO2=${data.spo2 || '-'}, Temp=${data.temperature || '-'}`);
+
+      const result = await client.query(`
+        INSERT INTO health_data (
+          device_id, imei, timestamp,
+          heart_rate, blood_pressure_systolic, 
+          blood_pressure_diastolic, spo2, blood_sugar, 
+          body_temperature, battery_level
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING id
+      `, [
+        deviceId, 
+        data.imei, 
+        data.timestamp || new Date(),
+        data.heartRate || null,
+        data.systolic || null,
+        data.diastolic || null, 
+        data.spo2 || null, 
+        data.bloodSugar || null,
+        data.temperature || null, 
+        data.batteryLevel || null
+      ]);
+
+      const newId = result.rows[0].id;
+      console.log(`✅ [DB] سطر صحي جديد - ID: ${newId}`);
+      logger.info(`دورة صحية جديدة للجهاز ${data.imei} - ID: ${newId}`);
+      return newId;
+
+    } else {
+      // ═══ UPDATE السطر الموجود (قياسات إضافية بنفس الدورة) ═══
+      console.log(`\n💾 [DB] تحديث سطر صحي #${cycleId} للجهاز ${data.imei}`);
+      
+      // بناء UPDATE ديناميكي - فقط الحقول اللي فيها قيم
+      const updates = [];
+      const values = [];
+      let paramIndex = 1;
+
+      if (data.heartRate !== undefined && data.heartRate !== null) {
+        updates.push(`heart_rate = $${paramIndex++}`);
+        values.push(data.heartRate);
+      }
+      if (data.systolic !== undefined && data.systolic !== null) {
+        updates.push(`blood_pressure_systolic = $${paramIndex++}`);
+        values.push(data.systolic);
+      }
+      if (data.diastolic !== undefined && data.diastolic !== null) {
+        updates.push(`blood_pressure_diastolic = $${paramIndex++}`);
+        values.push(data.diastolic);
+      }
+      if (data.spo2 !== undefined && data.spo2 !== null) {
+        updates.push(`spo2 = $${paramIndex++}`);
+        values.push(data.spo2);
+      }
+      if (data.bloodSugar !== undefined && data.bloodSugar !== null) {
+        updates.push(`blood_sugar = $${paramIndex++}`);
+        values.push(data.bloodSugar);
+      }
+      if (data.temperature !== undefined && data.temperature !== null) {
+        updates.push(`body_temperature = $${paramIndex++}`);
+        values.push(data.temperature);
+      }
+      if (data.batteryLevel !== undefined && data.batteryLevel !== null) {
+        updates.push(`battery_level = $${paramIndex++}`);
+        values.push(data.batteryLevel);
+      }
+
+      if (updates.length === 0) {
+        console.log(`⚠️ [DB] لا يوجد قيم لتحديثها بالسطر #${cycleId}`);
+        return cycleId;
+      }
+
+      values.push(cycleId);
+      const query = `UPDATE health_data SET ${updates.join(', ')} WHERE id = $${paramIndex}`;
+      
+      console.log(`   UPDATE fields: ${updates.join(', ')}`);
+      await client.query(query, values);
+      
+      console.log(`✅ [DB] تم تحديث السطر الصحي #${cycleId}`);
+      logger.info(`تحديث دورة صحية #${cycleId} للجهاز ${data.imei}`);
+      return cycleId;
+    }
+
+  } catch (err) {
+    console.error(`❌ [DB] خطأ في upsertHealthData:`, err.message);
+    console.error(`   Error Code: ${err.code}`);
+    logger.error('خطأ في upsertHealthData:', err.message);
+    return cycleId; // إرجاع الـ cycleId الحالي حتى لو فشل
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * ⭐ تحديث موقع موجود بالإحداثيات (لدورة الموقع)
+ */
+async function updateLocationById(locationId, latitude, longitude) {
+  const client = await pool.connect();
+  try {
+    console.log(`\n💾 [DB] تحديث موقع #${locationId} → lat=${latitude}, lng=${longitude}`);
+    
+    await client.query(
+      `UPDATE locations SET latitude = $1, longitude = $2 WHERE id = $3`,
+      [latitude, longitude, locationId]
+    );
+    
+    console.log(`✅ [DB] تم تحديث الموقع #${locationId}`);
+    return true;
+  } catch (err) {
+    console.error(`❌ [DB] خطأ في تحديث الموقع #${locationId}:`, err.message);
+    return false;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * ⭐ حفظ موقع جديد وإرجاع الـ ID
+ */
+async function saveLocationReturningId(data) {
+  const client = await pool.connect();
+  try {
+    console.log(`\n💾 [DB] حفظ موقع جديد للجهاز ${data.imei}`);
+    console.log(`   GPS Valid: ${data.gpsValid}, Lat: ${data.latitude}, Lng: ${data.longitude}`);
+    
+    const deviceId = await getOrCreateDevice(data.imei);
+
+    const result = await client.query(`
+      INSERT INTO locations (
+        device_id, imei, timestamp, latitude, longitude, speed, direction,
+        gps_valid, satellite_count, gsm_signal, battery_level,
+        mcc, mnc, lac, cell_id, wifi_data, 
+        fortification_state, working_mode
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      RETURNING id
+    `, [
+      deviceId, 
+      data.imei, 
+      data.timestamp || new Date(), 
+      data.latitude || 0, 
+      data.longitude || 0,
+      data.speed || 0, 
+      data.direction || 0, 
+      data.gpsValid || false, 
+      data.satelliteCount || 0,
+      data.gsmSignal || 0, 
+      data.batteryLevel || 0, 
+      data.mcc || 0, 
+      data.mnc || 0, 
+      data.lac || 0,
+      data.cellId || 0, 
+      JSON.stringify(data.wifiData || []), 
+      data.fortificationState || 0,
+      data.workingMode || 0
+    ]);
+
+    const insertedId = result.rows[0].id;
+    console.log(`✅ [DB] تم حفظ الموقع - ID: ${insertedId}`);
+    logger.info(`تم حفظ موقع للجهاز ${data.imei} - ID: ${insertedId}`);
+    return insertedId;
+
+  } catch (err) {
+    console.error(`❌ [DB] خطأ في حفظ الموقع:`, err.message);
+    logger.error('خطأ في حفظ الموقع:', err.message);
+    return null;
+  } finally {
+    client.release();
+  }
+}
+
 module.exports = {
   pool,
   testConnection,
@@ -421,9 +450,9 @@ module.exports = {
   getOrCreateDevice,
   saveLocation,
   saveHealthData,
-  createHealthCycleRow,
-  updateHealthCycleRow,
-  finalizeHealthCycle,
   saveAlert,
   updateDailySteps,
+  upsertHealthData,
+  updateLocationById,
+  saveLocationReturningId,
 };
