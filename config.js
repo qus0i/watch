@@ -65,11 +65,12 @@ module.exports = {
       apiUrl: 'https://opencellid.org/cell/get',
     },
 
-    // المصدر 2: Google Geolocation API (الأدق - يحتاج API key)
+    // المصدر 2: ⭐ Google Geolocation API (الأدق - الأولوية الأولى)
     // أنشئ مفتاح: https://console.cloud.google.com/apis/credentials
     // فعّل: Geolocation API
     // مجاني: أول 40,000 طلب/شهر
     google: {
+      enabled: !!process.env.GOOGLE_GEOLOCATION_KEY,
       apiKey: process.env.GOOGLE_GEOLOCATION_KEY || '',
     },
 
