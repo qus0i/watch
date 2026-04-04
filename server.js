@@ -1,650 +1,316 @@
-const https = require('https');
-const http = require('http');
-const config = require('../config');
-const logger = require('../utils/logger');
-
 /**
- * خدمة تحديد الموقع من بيانات الأبراج والـ WiFi
- * تستخدم عدة APIs كـ fallback:
- * 1. ⭐ Google Geolocation API (الأدق - الأولوية الأولى)
- * 2. UnwiredLabs (cell + WiFi)
- * 3. OpenCellID (مجاني)
- * 4. Combain
- * 5. WiFi-only عبر UnwiredLabs
- * 6. radiocells.org (مجاني بالكامل)
+ * ═══════════════════════════════════════════════════════════════
+ *  GPS Watch TCP Server
+ *  سيرفر TCP لاستقبال بيانات ساعات GPS الذكية
+ * ═══════════════════════════════════════════════════════════════
  */
 
-class LocationService {
+const net = require('net');
+const config = require('./config');
+const logger = require('./utils/logger');
+const db = require('./database/db');
+const ProtocolParser = require('./protocol/parser');
+const MessageHandlers = require('./handlers/messageHandlers');
+
+// Debug: تأكيد بدء التشغيل
+console.log('🚀 بدء تشغيل server.js...');
+console.log('📍 Node Version:', process.version);
+console.log('📍 Environment:', process.env.NODE_ENV || 'development');
+
+// تخزين الاتصالات النشطة
+const activeSockets = new Map();
+
+/**
+ * إنشاء TCP Server
+ */
+const server = net.createServer((socket) => {
+  const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
+  
+  logger.info(`🔌 اتصال جديد من: ${clientId}`);
+  console.log(`🔌 اتصال جديد من: ${clientId}`);
+  
+  // إضافة الاتصال للقائمة النشطة
+  activeSockets.set(clientId, socket);
+  
+  // معلومات الاتصال
+  socket.clientId = clientId;
+  socket.imei = null; // سيتم تحديده عند تسجيل الدخول
+  socket.connectedAt = new Date();
+  
+  // إعدادات الاتصال
+  socket.setKeepAlive(true, config.server.keepAliveInterval);
+  socket.setTimeout(180000); // 3 دقائق timeout
+  
+  // Buffer للرسائل غير المكتملة
+  let messageBuffer = '';
 
   /**
-   * تحويل بيانات الأبراج/WiFi إلى إحداثيات
-   * يجرب عدة APIs حتى ينجح أحدها
-   * ⭐ Google أولاً لأنه الأدق
+   * استقبال البيانات
    */
-  static async resolveLocation(mcc, mnc, lac, cellId, wifiData = []) {
-    // التحقق من صحة البيانات
-    if (!mcc || !lac || !cellId) {
-      console.log(`⚠️ [LOCATION_SVC] بيانات أبراج غير كافية: MCC=${mcc}, LAC=${lac}, CID=${cellId}`);
-      return null;
+  socket.on('data', async (data) => {
+    try {
+      // تحويل البيانات إلى نص
+      const rawData = data.toString();
+      messageBuffer += rawData;
+      
+      // Debug مفصّل
+      console.log('\n═══════════════════════════════════════');
+      console.log(`📥 [${clientId}] بيانات واردة:`);
+      console.log(`📦 الحجم: ${rawData.length} bytes`);
+      console.log(`📝 المحتوى الكامل: ${rawData}`);
+      console.log('═══════════════════════════════════════\n');
+      
+      logger.debug(`📥 بيانات واردة من ${clientId}: ${rawData.substring(0, 100)}...`);
+      
+      // معالجة الرسائل المكتملة (المنتهية بـ #)
+      while (messageBuffer.includes('#')) {
+        const endIndex = messageBuffer.indexOf('#');
+        const message = messageBuffer.substring(0, endIndex + 1);
+        messageBuffer = messageBuffer.substring(endIndex + 1);
+        
+        console.log(`🔄 معالجة رسالة: ${message}`);
+        
+        // تحليل الرسالة
+        const parsedData = ProtocolParser.parse(message);
+        
+        if (parsedData) {
+          console.log(`✅ تم تحليل الرسالة بنجاح - النوع: ${parsedData.type}`);
+          // معالجة الرسالة
+          await MessageHandlers.route(parsedData, socket);
+        } else {
+          console.log(`❌ فشل تحليل الرسالة: ${message}`);
+        }
+      }
+      
+      // تنظيف الـ buffer إذا كبر كثير
+      if (messageBuffer.length > 10000) {
+        logger.warn(`⚠️ Buffer كبير جداً، سيتم تنظيفه`);
+        messageBuffer = '';
+      }
+      
+    } catch (err) {
+      logger.error(`خطأ في معالجة البيانات من ${clientId}:`, err.message);
+      console.error(`❌ خطأ في معالجة البيانات:`, err);
     }
+  });
 
-    const isLTE = cellId > 65535;
-    const eNodeBId = isLTE ? Math.floor(cellId / 256) : null;
-    const localCellId = isLTE ? cellId % 256 : null;
+  /**
+   * عند قطع الاتصال
+   */
+  socket.on('end', () => {
+    logger.info(`🔌 قطع الاتصال: ${clientId} (IMEI: ${socket.imei || 'غير معروف'})`);
+    console.log(`🔌 قطع الاتصال: ${clientId}`);
+    activeSockets.delete(clientId);
+  });
+
+  /**
+   * عند حدوث خطأ
+   */
+  socket.on('error', (err) => {
+    logger.error(`❌ خطأ في الاتصال ${clientId}:`, err.message);
+    console.error(`❌ خطأ في الاتصال ${clientId}:`, err.message);
+  });
+
+  /**
+   * عند انتهاء المهلة (Timeout)
+   */
+  socket.on('timeout', () => {
+    logger.warn(`⏱️ انتهت مهلة الاتصال ${clientId}`);
+    socket.end();
+  });
+
+  /**
+   * عند إغلاق الاتصال
+   */
+  socket.on('close', (hadError) => {
+    if (hadError) {
+      logger.warn(`⚠️ إغلاق الاتصال مع خطأ: ${clientId}`);
+    } else {
+      logger.debug(`✓ إغلاق اتصال نظيف: ${clientId}`);
+    }
+    activeSockets.delete(clientId);
+  });
+});
+
+/**
+ * معالجة أخطاء السيرفر
+ */
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    logger.error(`❌ البورت ${config.server.port} مستخدم بالفعل!`);
+    process.exit(1);
+  } else {
+    logger.error('❌ خطأ في السيرفر:', err.message);
+  }
+});
+
+/**
+ * دالة لإرسال أمر لجهاز معين
+ * @param {string} imei - رقم IMEI
+ * @param {string} command - الأمر المُراد إرساله
+ */
+function sendCommandToDevice(imei, command) {
+  // البحث عن الـ socket بناءً على IMEI
+  for (const [clientId, socket] of activeSockets.entries()) {
+    if (socket.imei === imei) {
+      logger.info(`📤 إرسال أمر للجهاز ${imei}: ${command}`);
+      console.log(`📤 إرسال أمر للجهاز ${imei}: ${command}`);
+      socket.write(command);
+      return true;
+    }
+  }
+  
+  logger.warn(`⚠️ الجهاز ${imei} غير متصل حالياً`);
+  console.log(`⚠️ الجهاز ${imei} غير متصل حالياً`);
+  return false;
+}
+
+/**
+ * دالة لإحصائيات الاتصالات
+ */
+function getServerStats() {
+  const stats = {
+    totalConnections: activeSockets.size,
+    devices: [],
+  };
+  
+  for (const [clientId, socket] of activeSockets.entries()) {
+    stats.devices.push({
+      clientId,
+      imei: socket.imei || 'غير معروف',
+      connectedAt: socket.connectedAt,
+      uptime: Date.now() - socket.connectedAt.getTime(),
+    });
+  }
+  
+  return stats;
+}
+
+/**
+ * بدء تشغيل السيرفر
+ */
+async function startServer() {
+  try {
+    console.log('🔵 startServer() called');
     
-    if (isLTE) {
-      console.log(`📡 [LOCATION_SVC] LTE detected: eNodeB=${eNodeBId}, localCell=${localCellId}, fullCID=${cellId}`);
+    // اختبار الاتصال بقاعدة البيانات
+    logger.info('🔍 اختبار الاتصال بقاعدة البيانات...');
+    console.log('🔵 Testing database connection...');
+    
+    const dbConnected = await db.testConnection();
+    console.log('🔵 Database connection result:', dbConnected);
+    
+    if (!dbConnected) {
+      logger.error('❌ فشل الاتصال بقاعدة البيانات. تحقق من الإعدادات.');
+      console.error('❌ Database connection failed');
+      process.exit(1);
     }
-
-    console.log(`🔍 [LOCATION_SVC] بدء تحديد الموقع: MCC=${mcc}, MNC=${mnc}, LAC=${lac}, CID=${cellId}, WiFi=${wifiData.length} networks`);
-
-    // ═══ محاولة 1: ⭐ Google Geolocation API (الأدق والأشمل) ═══
-    try {
-      console.log(`🌐 [LOCATION_SVC] ═══ محاولة 1: Google Geolocation API ═══`);
-      const result = await this.resolveViaGoogle(mcc, mnc, lac, cellId, wifiData);
-      if (result) {
-        console.log(`✅ [LOCATION_SVC] ✨ Google نجح! ${result.latitude}, ${result.longitude} (دقة: ${result.accuracy}م)`);
-        return result;
-      } else {
-        console.log(`⚠️ [LOCATION_SVC] Google لم يرجع نتيجة`);
-      }
-    } catch (err) {
-      console.log(`⚠️ [LOCATION_SVC] Google خطأ: ${err.message}`);
-    }
-
-    // ═══ محاولة 2: UnwiredLabs API (cell + WiFi) ═══
-    try {
-      console.log(`🌐 [LOCATION_SVC] ═══ محاولة 2: UnwiredLabs ═══`);
-      const result = await this.resolveViaUnwiredLabs(mcc, mnc, lac, cellId, wifiData);
-      if (result) {
-        console.log(`✅ [LOCATION_SVC] UnwiredLabs: ${result.latitude}, ${result.longitude}`);
-        return result;
-      }
-    } catch (err) {
-      console.log(`⚠️ [LOCATION_SVC] UnwiredLabs خطأ: ${err.message}`);
-    }
-
-    // ═══ محاولة 3: OpenCellID مع الـ CID الكامل ═══
-    try {
-      console.log(`🌐 [LOCATION_SVC] ═══ محاولة 3: OpenCellID (full CID) ═══`);
-      const result = await this.resolveViaOpenCellID(mcc, mnc, lac, cellId, isLTE ? 'lte' : 'gsm');
-      if (result) {
-        console.log(`✅ [LOCATION_SVC] OpenCellID (full CID): ${result.latitude}, ${result.longitude} (دقة: ${result.accuracy}م)`);
-        return result;
-      }
-    } catch (err) {
-      console.log(`⚠️ [LOCATION_SVC] OpenCellID (full CID) خطأ: ${err.message}`);
-    }
-
-    // ═══ محاولة 4: OpenCellID مع أنواع radio مختلفة ═══
-    if (isLTE) {
-      for (const radio of ['umts', 'gsm']) {
-        try {
-          const result = await this.resolveViaOpenCellID(mcc, mnc, lac, cellId, radio);
-          if (result) {
-            console.log(`✅ [LOCATION_SVC] OpenCellID (${radio}): ${result.latitude}, ${result.longitude}`);
-            return result;
-          }
-        } catch (err) {
-          // silent - try next
-        }
-      }
-    }
-
-    // ═══ محاولة 5: OpenCellID مع eNodeB ID ═══
-    if (isLTE && eNodeBId) {
-      try {
-        console.log(`🌐 [LOCATION_SVC] OpenCellID (eNodeB): trying CID=${eNodeBId} instead of ${cellId}`);
-        const result = await this.resolveViaOpenCellID(mcc, mnc, lac, eNodeBId, 'lte');
-        if (result) {
-          console.log(`✅ [LOCATION_SVC] OpenCellID (eNodeB): ${result.latitude}, ${result.longitude}`);
-          return result;
-        }
-      } catch (err) {
-        // silent
-      }
-    }
-
-    // ═══ محاولة 6: UnwiredLabs مع eNodeB ID ═══
-    if (isLTE && eNodeBId) {
-      try {
-        console.log(`🌐 [LOCATION_SVC] UnwiredLabs (eNodeB): trying CID=${eNodeBId}`);
-        const result = await this.resolveViaUnwiredLabs(mcc, mnc, lac, eNodeBId, wifiData);
-        if (result) {
-          console.log(`✅ [LOCATION_SVC] UnwiredLabs (eNodeB): ${result.latitude}, ${result.longitude}`);
-          return result;
-        }
-      } catch (err) {
-        console.log(`⚠️ [LOCATION_SVC] UnwiredLabs (eNodeB) خطأ: ${err.message}`);
-      }
-    }
-
-    // ═══ محاولة 7: WiFi-only عبر UnwiredLabs ═══
-    if (wifiData && wifiData.length > 0) {
-      try {
-        console.log(`📶 [LOCATION_SVC] WiFi-only positioning: ${wifiData.length} networks`);
-        const result = await this.resolveViaWifiOnly(wifiData);
-        if (result) {
-          console.log(`✅ [LOCATION_SVC] WiFi-only: ${result.latitude}, ${result.longitude} (دقة: ${result.accuracy}م)`);
-          return result;
-        }
-      } catch (err) {
-        console.log(`⚠️ [LOCATION_SVC] WiFi-only خطأ: ${err.message}`);
-      }
-    }
-
-    // ═══ محاولة 8: Combain API ═══
-    try {
-      const result = await this.resolveViaCombain(mcc, mnc, lac, cellId, wifiData);
-      if (result) {
-        console.log(`✅ [LOCATION_SVC] Combain: ${result.latitude}, ${result.longitude}`);
-        return result;
-      }
-    } catch (err) {
-      console.log(`⚠️ [LOCATION_SVC] Combain خطأ: ${err.message}`);
-    }
-
-    console.log(`❌ [LOCATION_SVC] فشلت جميع المحاولات لتحويل الموقع (8 محاولات)`);
-    return null;
-  }
-
-  /**
-   * OpenCellID API
-   */
-  static resolveViaOpenCellID(mcc, mnc, lac, cellId, radioType = 'lte') {
-    return new Promise((resolve, reject) => {
-      const opencellConfig = config.locationServices?.opencellid;
+    
+    // ⭐ تهيئة قاعدة البيانات (إنشاء الجداول إذا لم تكن موجودة)
+    console.log('🔵 Initializing database schema...');
+    await db.initializeDatabase();
+    
+    console.log('🔵 Starting TCP server...');
+    
+    // بدء الاستماع
+    server.listen(config.server.port, config.server.host, () => {
+      console.log('🔵 TCP server listening callback fired');
+      logger.info('═══════════════════════════════════════════════════════');
+      logger.info(`✅ السيرفر يعمل على ${config.server.host}:${config.server.port}`);
+      logger.info(`📊 المنطقة الزمنية: UTC+${config.system.timezone}`);
+      logger.info('═══════════════════════════════════════════════════════');
       
-      if (!opencellConfig?.enabled || !opencellConfig?.apiToken) {
-        return reject(new Error('OpenCellID غير مفعّل أو بدون token'));
-      }
-
-      const token = opencellConfig.apiToken;
-      const url = `https://opencellid.org/cell/get?key=${token}&mcc=${mcc}&mnc=${mnc}&lac=${lac}&cellid=${cellId}&radio=${radioType}&format=json`;
-
-      console.log(`🌐 [LOCATION_SVC] OpenCellID request: MCC=${mcc}, MNC=${mnc}, LAC=${lac}, CID=${cellId}, radio=${radioType}`);
-
-      const req = https.get(url, { timeout: 10000 }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            
-            if (json.lat && json.lon) {
-              resolve({
-                latitude: parseFloat(json.lat),
-                longitude: parseFloat(json.lon),
-                accuracy: json.range || 0,
-                source: 'opencellid',
-              });
-            } else if (json.error) {
-              console.log(`⚠️ [LOCATION_SVC] OpenCellID error: ${json.error}`);
-              resolve(null);
-            } else {
-              resolve(null);
-            }
-          } catch (parseErr) {
-            reject(new Error(`فشل تحليل رد OpenCellID: ${parseErr.message}`));
-          }
-        });
-      });
-
-      req.on('error', (err) => reject(err));
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new Error('OpenCellID timeout'));
-      });
+      console.log('═══════════════════════════════════════════════════════');
+      console.log(`✅ السيرفر يعمل على ${config.server.host}:${config.server.port}`);
+      console.log(`📊 المنطقة الزمنية: UTC+${config.system.timezone}`);
+      console.log('═══════════════════════════════════════════════════════');
     });
-  }
-
-  /**
-   * ⭐ Google Geolocation API
-   * الأدق والأشمل - يدعم cell towers + WiFi معاً
-   * يحتاج Google Maps API key مع تفعيل Geolocation API
-   */
-  static resolveViaGoogle(mcc, mnc, lac, cellId, wifiData = []) {
-    return new Promise((resolve, reject) => {
-      const rawKey = config.locationServices?.google?.apiKey || process.env.GOOGLE_GEOLOCATION_KEY;
+    
+    // إحصائيات دورية (كل 5 دقائق)
+    setInterval(() => {
+      const stats = getServerStats();
+      logger.info(`📊 إحصائيات: ${stats.totalConnections} اتصال نشط`);
+      console.log(`📊 إحصائيات: ${stats.totalConnections} اتصال نشط`);
       
-      // ⭐ تحقق مفصّل من المفتاح
-      if (!rawKey || rawKey.trim() === '') {
-        console.log(`❌ [GOOGLE] لا يوجد API key! تأكد من ضبط GOOGLE_GEOLOCATION_KEY`);
-        console.log(`   config value: "${config.locationServices?.google?.apiKey || 'EMPTY'}"`);
-        console.log(`   env value: "${process.env.GOOGLE_GEOLOCATION_KEY ? 'SET (' + process.env.GOOGLE_GEOLOCATION_KEY.substring(0, 10) + '...)' : 'NOT SET'}"`);
-        return resolve(null);
+      if (config.system.enableDebug && stats.devices.length > 0) {
+        logger.debug('الأجهزة المتصلة:', stats.devices);
+        console.log('الأجهزة المتصلة:', stats.devices);
       }
-
-      // تنظيف المفتاح من أي فراغات أو أحرف غير مرئية
-      const apiKey = rawKey.trim().replace(/[^\x20-\x7E]/g, '');
-      
-      console.log(`🔑 [GOOGLE] API Key: ${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 4)} (length: ${apiKey.length})`);
-
-      const isLTE = cellId > 65535;
-      
-      const requestBody = {
-        homeMobileCountryCode: mcc,
-        homeMobileNetworkCode: mnc,
-        radioType: isLTE ? 'lte' : 'gsm',
-        considerIp: false,
-        cellTowers: [{
-          cellId: cellId,
-          locationAreaCode: lac,
-          mobileCountryCode: mcc,
-          mobileNetworkCode: mnc,
-          signalStrength: -60,
-        }],
-      };
-
-      // إضافة WiFi إذا متوفر
-      if (wifiData && wifiData.length > 0) {
-        requestBody.wifiAccessPoints = wifiData
-          .filter(w => w.mac)
-          .map(w => ({
-            macAddress: w.mac,
-            signalStrength: w.signal ? -Math.abs(w.signal) : -50,
-          }));
-        console.log(`📶 [GOOGLE] WiFi networks added: ${requestBody.wifiAccessPoints.length}`);
-      }
-
-      const postData = JSON.stringify(requestBody);
-
-      console.log(`🌐 [GOOGLE] Request: MCC=${mcc}, MNC=${mnc}, LAC=${lac}, CID=${cellId}, radio=${isLTE ? 'lte' : 'gsm'}`);
-      console.log(`📦 [GOOGLE] Body: ${postData}`);
-
-      const options = {
-        hostname: 'www.googleapis.com',
-        port: 443,
-        path: `/geolocation/v1/geolocate?key=${apiKey}`,
-        method: 'POST',
-        timeout: 15000,
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
-        },
-      };
-
-      console.log(`🌐 [GOOGLE] URL: https://${options.hostname}${options.path.replace(apiKey, apiKey.substring(0, 10) + '...')}`);
-
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            console.log(`📨 [GOOGLE] Response status: ${res.statusCode}`);
-            console.log(`📨 [GOOGLE] Response body: ${data}`);
-
-            const json = JSON.parse(data);
-            
-            if (json.location && json.location.lat && json.location.lng) {
-              console.log(`✅ [GOOGLE] نجح! lat=${json.location.lat}, lng=${json.location.lng}, accuracy=${json.accuracy}م`);
-              resolve({
-                latitude: parseFloat(json.location.lat),
-                longitude: parseFloat(json.location.lng),
-                accuracy: json.accuracy || 0,
-                source: 'google',
-              });
-            } else if (json.error) {
-              console.log(`❌ [GOOGLE] API Error:`);
-              console.log(`   Code: ${json.error.code}`);
-              console.log(`   Message: ${json.error.message}`);
-              console.log(`   Status: ${json.error.status}`);
-              if (json.error.errors) {
-                json.error.errors.forEach((e, i) => {
-                  console.log(`   Error ${i}: domain=${e.domain}, reason=${e.reason}, message=${e.message}`);
-                });
-              }
-              resolve(null);
-            } else {
-              console.log(`⚠️ [GOOGLE] رد غير متوقع: ${data}`);
-              resolve(null);
-            }
-          } catch (parseErr) {
-            console.log(`❌ [GOOGLE] فشل تحليل الرد: ${parseErr.message}`);
-            console.log(`   Raw data: ${data.substring(0, 500)}`);
-            reject(new Error(`فشل تحليل رد Google: ${parseErr.message}`));
-          }
-        });
-      });
-
-      req.on('error', (err) => {
-        console.log(`❌ [GOOGLE] Network error: ${err.message}`);
-        reject(err);
-      });
-      req.on('timeout', () => {
-        console.log(`❌ [GOOGLE] Timeout after 15 seconds`);
-        req.destroy();
-        reject(new Error('Google Geolocation timeout'));
-      });
-
-      req.write(postData);
-      req.end();
-    });
-  }
-
-  /**
-   * UnwiredLabs API - Fallback
-   * يدعم cell towers و WiFi معاً
-   */
-  static resolveViaUnwiredLabs(mcc, mnc, lac, cellId, wifiData = []) {
-    return new Promise((resolve, reject) => {
-      const apiToken = config.locationServices?.unwiredlabs?.apiToken || process.env.UNWIREDLABS_TOKEN;
-      
-      if (!apiToken) {
-        console.log(`⚠️ [LOCATION_SVC] UnwiredLabs: لا يوجد token - تخطي`);
-        return resolve(null);
-      }
-
-      const isLTE = cellId > 65535;
-
-      const requestBody = {
-        token: apiToken,
-        radio: isLTE ? 'lte' : 'gsm',
-        mcc: mcc,
-        mnc: mnc,
-        cells: [{
-          lac: lac,
-          cid: cellId,
-        }],
-      };
-
-      // إضافة WiFi إذا متوفر
-      if (wifiData && wifiData.length > 0) {
-        requestBody.wifi = wifiData
-          .filter(w => w.mac)
-          .map(w => ({
-            bssid: w.mac,
-            signal: w.signal ? -Math.abs(w.signal) : -50,
-          }));
-      }
-
-      const postData = JSON.stringify(requestBody);
-
-      console.log(`🌐 [LOCATION_SVC] UnwiredLabs request: MCC=${mcc}, MNC=${mnc}, LAC=${lac}, CID=${cellId}, radio=${isLTE ? 'lte' : 'gsm'}`);
-
-      const options = {
-        hostname: 'us1.unwiredlabs.com',
-        port: 443,
-        path: '/v2/process.php',
-        method: 'POST',
-        timeout: 10000,
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
-        },
-      };
-
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            console.log(`📡 [LOCATION_SVC] UnwiredLabs response: status=${json.status}, lat=${json.lat}, lon=${json.lon}, message=${json.message || 'none'}`);
-            
-            if (json.status === 'ok' && json.lat && json.lon) {
-              resolve({
-                latitude: parseFloat(json.lat),
-                longitude: parseFloat(json.lon),
-                accuracy: json.accuracy || 0,
-                source: 'unwiredlabs',
-              });
-            } else {
-              console.log(`⚠️ [LOCATION_SVC] UnwiredLabs: ${json.message || json.status || 'no data'}`);
-              resolve(null);
-            }
-          } catch (parseErr) {
-            console.log(`❌ [LOCATION_SVC] UnwiredLabs parse error: ${parseErr.message}, raw: ${data.substring(0, 200)}`);
-            reject(new Error(`فشل تحليل رد UnwiredLabs: ${parseErr.message}`));
-          }
-        });
-      });
-
-      req.on('error', (err) => reject(err));
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new Error('UnwiredLabs timeout'));
-      });
-
-      req.write(postData);
-      req.end();
-    });
-  }
-
-  /**
-   * Combain API
-   * 100 طلب مجاني عند التسجيل
-   */
-  static resolveViaCombain(mcc, mnc, lac, cellId, wifiData = []) {
-    return new Promise((resolve, reject) => {
-      const apiKey = config.locationServices?.combain?.apiKey || process.env.COMBAIN_API_KEY;
-      
-      if (!apiKey) {
-        return resolve(null); // skip silently
-      }
-
-      const isLTE = cellId > 65535;
-
-      const requestBody = {
-        cellTowers: [{
-          mobileCountryCode: mcc,
-          mobileNetworkCode: mnc,
-          locationAreaCode: lac,
-          cellId: cellId,
-          radioType: isLTE ? 'lte' : 'gsm',
-        }],
-      };
-
-      // إضافة WiFi
-      if (wifiData && wifiData.length > 0) {
-        requestBody.wifiAccessPoints = wifiData
-          .filter(w => w.mac)
-          .map(w => ({
-            macAddress: w.mac,
-            signalStrength: w.signal ? -Math.abs(w.signal) : -50,
-          }));
-      }
-
-      const postData = JSON.stringify(requestBody);
-
-      const options = {
-        hostname: 'apiv2.combain.com',
-        port: 443,
-        path: `/v2/search?key=${apiKey}`,
-        method: 'POST',
-        timeout: 10000,
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
-        },
-      };
-
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            
-            if (json.location && json.location.lat && json.location.lng) {
-              resolve({
-                latitude: parseFloat(json.location.lat),
-                longitude: parseFloat(json.location.lng),
-                accuracy: json.accuracy || 0,
-                source: 'combain',
-              });
-            } else {
-              resolve(null);
-            }
-          } catch (parseErr) {
-            reject(new Error(`فشل تحليل رد Combain: ${parseErr.message}`));
-          }
-        });
-      });
-
-      req.on('error', (err) => reject(err));
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new Error('Combain timeout'));
-      });
-
-      req.write(postData);
-      req.end();
-    });
-  }
-
-  /**
-   * radiocells.org API
-   * مجاني بالكامل - بدون API key
-   */
-  static resolveViaRadioCells(mcc, mnc, lac, cellId) {
-    return new Promise((resolve, reject) => {
-      const isLTE = cellId > 65535;
-
-      const requestBody = {
-        cellTowers: [{
-          mobileCountryCode: mcc,
-          mobileNetworkCode: mnc,
-          locationAreaCode: lac,
-          cellId: cellId,
-          radioType: isLTE ? 'lte' : 'gsm',
-        }],
-      };
-
-      const postData = JSON.stringify(requestBody);
-
-      const options = {
-        hostname: 'radiocells.org',
-        port: 443,
-        path: '/geolocation',
-        method: 'POST',
-        timeout: 10000,
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
-        },
-      };
-
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            
-            if (json.location && json.location.lat && json.location.lng) {
-              resolve({
-                latitude: parseFloat(json.location.lat),
-                longitude: parseFloat(json.location.lng),
-                accuracy: json.accuracy || 0,
-                source: 'radiocells',
-              });
-            } else {
-              resolve(null);
-            }
-          } catch (parseErr) {
-            reject(new Error(`فشل تحليل رد RadioCells: ${parseErr.message}`));
-          }
-        });
-      });
-
-      req.on('error', (err) => reject(err));
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new Error('RadioCells timeout'));
-      });
-
-      req.write(postData);
-      req.end();
-    });
-  }
-
-  /**
-   * WiFi-only positioning عبر UnwiredLabs
-   * يستخدم بيانات WiFi فقط (بدون cell towers)
-   */
-  static resolveViaWifiOnly(wifiData) {
-    return new Promise((resolve, reject) => {
-      const apiToken = config.locationServices?.unwiredlabs?.apiToken || process.env.UNWIREDLABS_TOKEN;
-      
-      if (!apiToken) {
-        console.log(`⚠️ [LOCATION_SVC] WiFi-only: لا يوجد UnwiredLabs token`);
-        return resolve(null);
-      }
-
-      if (!wifiData || wifiData.length === 0) {
-        return resolve(null);
-      }
-
-      const wifiNetworks = wifiData
-        .filter(w => w.mac)
-        .map(w => ({
-          bssid: w.mac,
-          signal: w.signal ? -Math.abs(w.signal) : -50,
-        }));
-
-      if (wifiNetworks.length === 0) {
-        return resolve(null);
-      }
-
-      const requestBody = {
-        token: apiToken,
-        wifi: wifiNetworks,
-        address: 1,
-      };
-
-      const postData = JSON.stringify(requestBody);
-
-      console.log(`📶 [LOCATION_SVC] WiFi-only request: ${wifiNetworks.length} networks, MACs: ${wifiNetworks.map(w => w.bssid).join(', ')}`);
-
-      const options = {
-        hostname: 'us1.unwiredlabs.com',
-        port: 443,
-        path: '/v2/process.php',
-        method: 'POST',
-        timeout: 10000,
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(postData),
-        },
-      };
-
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            console.log(`📶 [LOCATION_SVC] WiFi-only response: status=${json.status}, lat=${json.lat}, lon=${json.lon}, address=${json.address || 'none'}`);
-            
-            if (json.status === 'ok' && json.lat && json.lon) {
-              resolve({
-                latitude: parseFloat(json.lat),
-                longitude: parseFloat(json.lon),
-                accuracy: json.accuracy || 0,
-                source: 'wifi-unwiredlabs',
-              });
-            } else {
-              console.log(`⚠️ [LOCATION_SVC] WiFi-only: ${json.message || 'no matches'}`);
-              resolve(null);
-            }
-          } catch (parseErr) {
-            console.log(`❌ [LOCATION_SVC] WiFi-only parse error: ${parseErr.message}`);
-            reject(new Error(`WiFi-only parse error: ${parseErr.message}`));
-          }
-        });
-      });
-
-      req.on('error', (err) => reject(err));
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new Error('WiFi-only timeout'));
-      });
-
-      req.write(postData);
-      req.end();
-    });
+    }, 300000); // 5 دقائق
+    
+  } catch (err) {
+    logger.error('❌ فشل بدء السيرفر:', err.message);
+    process.exit(1);
   }
 }
 
-module.exports = LocationService;
+/**
+ * معالجة إشارات إيقاف التشغيل
+ */
+process.on('SIGTERM', () => {
+  logger.info('⚠️ استلام إشارة SIGTERM، إيقاف السيرفر...');
+  gracefulShutdown();
+});
+
+process.on('SIGINT', () => {
+  logger.info('⚠️ استلام إشارة SIGINT، إيقاف السيرفر...');
+  gracefulShutdown();
+});
+
+/**
+ * إيقاف تشغيل آمن
+ */
+function gracefulShutdown() {
+  logger.info('🛑 جاري إغلاق الاتصالات...');
+  
+  // إغلاق جميع الاتصالات النشطة
+  for (const [clientId, socket] of activeSockets.entries()) {
+    socket.end();
+  }
+  
+  // إغلاق السيرفر
+  server.close(() => {
+    logger.info('✅ تم إيقاف السيرفر بنجاح');
+    
+    // إغلاق قاعدة البيانات
+    db.pool.end(() => {
+      logger.info('✅ تم إغلاق قاعدة البيانات');
+      process.exit(0);
+    });
+  });
+  
+  // إجبار الإغلاق بعد 10 ثواني
+  setTimeout(() => {
+    logger.error('⚠️ فشل الإغلاق النظيف، إغلاق قسري');
+    process.exit(1);
+  }, 10000);
+}
+
+/**
+ * معالجة الأخطاء غير المُتوقعة
+ */
+process.on('uncaughtException', (err) => {
+  logger.error('❌❌ خطأ غير متوقع:', err);
+  gracefulShutdown();
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('❌ Promise غير معالج:', reason);
+});
+
+// تصدير الدوال للاستخدام الخارجي
+module.exports = {
+  startServer,
+  sendCommandToDevice,
+  getServerStats,
+};
+
+// بدء التشغيل إذا تم تشغيل الملف مباشرة
+if (require.main === module) {
+  console.log('🔵 Module is main, calling startServer()');
+  startServer().catch(err => {
+    console.error('❌❌ Fatal error in startServer:', err);
+    console.error('Stack:', err.stack);
+    process.exit(1);
+  });
+}
