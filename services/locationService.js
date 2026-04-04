@@ -46,7 +46,7 @@ class LocationService {
       console.log(`⚠️ [LOCATION_SVC] OpenCellID (full CID) خطأ: ${err.message}`);
     }
 
-    // ═══ محاولة 2: OpenCellID مع أنواع radio مختلفة (LTE towers sometimes indexed as UMTS) ═══
+    // ═══ محاولة 2: OpenCellID مع أنواع radio مختلفة ═══
     if (isLTE) {
       for (const radio of ['umts', 'gsm']) {
         try {
@@ -61,7 +61,21 @@ class LocationService {
       }
     }
 
-    // ═══ محاولة 3: Google Geolocation API (الأدق) ═══
+    // ═══ محاولة 3: OpenCellID مع eNodeB ID (بدل CID الكامل) ═══
+    if (isLTE && eNodeBId) {
+      try {
+        console.log(`🌐 [LOCATION_SVC] OpenCellID (eNodeB): trying CID=${eNodeBId} instead of ${cellId}`);
+        const result = await this.resolveViaOpenCellID(mcc, mnc, lac, eNodeBId, 'lte');
+        if (result) {
+          console.log(`✅ [LOCATION_SVC] OpenCellID (eNodeB): ${result.latitude}, ${result.longitude}`);
+          return result;
+        }
+      } catch (err) {
+        // silent
+      }
+    }
+
+    // ═══ محاولة 4: Google Geolocation API (الأدق) ═══
     try {
       const result = await this.resolveViaGoogle(mcc, mnc, lac, cellId, wifiData);
       if (result) {
@@ -72,7 +86,7 @@ class LocationService {
       console.log(`⚠️ [LOCATION_SVC] Google خطأ: ${err.message}`);
     }
 
-    // ═══ محاولة 4: UnwiredLabs API ═══
+    // ═══ محاولة 5: UnwiredLabs API (cell + WiFi) ═══
     try {
       const result = await this.resolveViaUnwiredLabs(mcc, mnc, lac, cellId, wifiData);
       if (result) {
@@ -83,7 +97,35 @@ class LocationService {
       console.log(`⚠️ [LOCATION_SVC] UnwiredLabs خطأ: ${err.message}`);
     }
 
-    // ═══ محاولة 5: Combain API ═══
+    // ═══ محاولة 6: UnwiredLabs مع eNodeB ID ═══
+    if (isLTE && eNodeBId) {
+      try {
+        console.log(`🌐 [LOCATION_SVC] UnwiredLabs (eNodeB): trying CID=${eNodeBId}`);
+        const result = await this.resolveViaUnwiredLabs(mcc, mnc, lac, eNodeBId, wifiData);
+        if (result) {
+          console.log(`✅ [LOCATION_SVC] UnwiredLabs (eNodeB): ${result.latitude}, ${result.longitude}`);
+          return result;
+        }
+      } catch (err) {
+        console.log(`⚠️ [LOCATION_SVC] UnwiredLabs (eNodeB) خطأ: ${err.message}`);
+      }
+    }
+
+    // ═══ محاولة 7: WiFi-only عبر UnwiredLabs (بدون cell tower) ═══
+    if (wifiData && wifiData.length > 0) {
+      try {
+        console.log(`📶 [LOCATION_SVC] WiFi-only positioning: ${wifiData.length} networks`);
+        const result = await this.resolveViaWifiOnly(wifiData);
+        if (result) {
+          console.log(`✅ [LOCATION_SVC] WiFi-only: ${result.latitude}, ${result.longitude} (دقة: ${result.accuracy}م)`);
+          return result;
+        }
+      } catch (err) {
+        console.log(`⚠️ [LOCATION_SVC] WiFi-only خطأ: ${err.message}`);
+      }
+    }
+
+    // ═══ محاولة 8: Combain API ═══
     try {
       const result = await this.resolveViaCombain(mcc, mnc, lac, cellId, wifiData);
       if (result) {
@@ -92,17 +134,6 @@ class LocationService {
       }
     } catch (err) {
       console.log(`⚠️ [LOCATION_SVC] Combain خطأ: ${err.message}`);
-    }
-
-    // ═══ محاولة 6: radiocells.org (مجاني بالكامل بدون API key) ═══
-    try {
-      const result = await this.resolveViaRadioCells(mcc, mnc, lac, cellId);
-      if (result) {
-        console.log(`✅ [LOCATION_SVC] RadioCells: ${result.latitude}, ${result.longitude}`);
-        return result;
-      }
-    } catch (err) {
-      console.log(`⚠️ [LOCATION_SVC] RadioCells خطأ: ${err.message}`);
     }
 
     console.log(`⚠️ [LOCATION_SVC] فشلت جميع المحاولات لتحويل الموقع`);
@@ -485,6 +516,94 @@ class LocationService {
       req.on('timeout', () => {
         req.destroy();
         reject(new Error('RadioCells timeout'));
+      });
+
+      req.write(postData);
+      req.end();
+    });
+  }
+
+  /**
+   * WiFi-only positioning عبر UnwiredLabs
+   * يستخدم بيانات WiFi فقط (بدون cell towers)
+   * مفيد لما البرج مش موجود في أي قاعدة بيانات
+   */
+  static resolveViaWifiOnly(wifiData) {
+    return new Promise((resolve, reject) => {
+      const apiToken = config.locationServices?.unwiredlabs?.apiToken || process.env.UNWIREDLABS_TOKEN;
+      
+      if (!apiToken) {
+        console.log(`⚠️ [LOCATION_SVC] WiFi-only: لا يوجد UnwiredLabs token`);
+        return resolve(null);
+      }
+
+      if (!wifiData || wifiData.length === 0) {
+        return resolve(null);
+      }
+
+      const wifiNetworks = wifiData
+        .filter(w => w.mac)
+        .map(w => ({
+          bssid: w.mac,
+          signal: w.signal ? -Math.abs(w.signal) : -50,
+        }));
+
+      if (wifiNetworks.length === 0) {
+        return resolve(null);
+      }
+
+      const requestBody = {
+        token: apiToken,
+        wifi: wifiNetworks,
+        address: 1,
+      };
+
+      const postData = JSON.stringify(requestBody);
+
+      console.log(`📶 [LOCATION_SVC] WiFi-only request: ${wifiNetworks.length} networks, MACs: ${wifiNetworks.map(w => w.bssid).join(', ')}`);
+
+      const options = {
+        hostname: 'us1.unwiredlabs.com',
+        port: 443,
+        path: '/v2/process.php',
+        method: 'POST',
+        timeout: 10000,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData),
+        },
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            console.log(`📶 [LOCATION_SVC] WiFi-only response: status=${json.status}, lat=${json.lat}, lon=${json.lon}, address=${json.address || 'none'}`);
+            
+            if (json.status === 'ok' && json.lat && json.lon) {
+              resolve({
+                latitude: parseFloat(json.lat),
+                longitude: parseFloat(json.lon),
+                accuracy: json.accuracy || 0,
+                source: 'wifi-unwiredlabs',
+              });
+            } else {
+              console.log(`⚠️ [LOCATION_SVC] WiFi-only: ${json.message || 'no matches'}`);
+              resolve(null);
+            }
+          } catch (parseErr) {
+            console.log(`❌ [LOCATION_SVC] WiFi-only parse error: ${parseErr.message}`);
+            reject(new Error(`WiFi-only parse error: ${parseErr.message}`));
+          }
+        });
+      });
+
+      req.on('error', (err) => reject(err));
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('WiFi-only timeout'));
       });
 
       req.write(postData);
