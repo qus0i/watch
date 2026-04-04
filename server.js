@@ -210,6 +210,20 @@ async function startServer() {
     console.log('🔵 Initializing database schema...');
     await db.initializeDatabase();
     
+    // ⭐ تحقق من إعدادات خدمات الموقع
+    const googleKey = config.locationServices?.google?.apiKey;
+    if (googleKey && googleKey.trim() !== '') {
+      console.log(`✅ [STARTUP] Google Geolocation API: مفعّل (Key: ${googleKey.substring(0, 10)}...)`);
+    } else {
+      console.log(`❌ [STARTUP] Google Geolocation API: غير مفعّل! أضف GOOGLE_GEOLOCATION_KEY`);
+    }
+    
+    const opencellToken = config.locationServices?.opencellid?.apiToken;
+    console.log(`${opencellToken ? '✅' : '❌'} [STARTUP] OpenCellID: ${opencellToken ? 'مفعّل' : 'غير مفعّل'}`);
+    
+    const unwiredToken = config.locationServices?.unwiredlabs?.apiToken || process.env.UNWIREDLABS_TOKEN;
+    console.log(`${unwiredToken ? '✅' : '❌'} [STARTUP] UnwiredLabs: ${unwiredToken ? 'مفعّل' : 'غير مفعّل'}`);
+
     console.log('🔵 Starting TCP server...');
     
     // بدء الاستماع
