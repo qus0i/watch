@@ -264,7 +264,8 @@ class LocationService {
       const apiToken = config.locationServices?.unwiredlabs?.apiToken || process.env.UNWIREDLABS_TOKEN;
       
       if (!apiToken) {
-        return resolve(null); // skip silently
+        console.log(`⚠️ [LOCATION_SVC] UnwiredLabs: لا يوجد token - تخطي`);
+        return resolve(null);
       }
 
       const isLTE = cellId > 65535;
@@ -292,6 +293,8 @@ class LocationService {
 
       const postData = JSON.stringify(requestBody);
 
+      console.log(`🌐 [LOCATION_SVC] UnwiredLabs request: MCC=${mcc}, MNC=${mnc}, LAC=${lac}, CID=${cellId}, radio=${isLTE ? 'lte' : 'gsm'}`);
+
       const options = {
         hostname: 'us1.unwiredlabs.com',
         port: 443,
@@ -310,6 +313,7 @@ class LocationService {
         res.on('end', () => {
           try {
             const json = JSON.parse(data);
+            console.log(`📡 [LOCATION_SVC] UnwiredLabs response: status=${json.status}, lat=${json.lat}, lon=${json.lon}, message=${json.message || 'none'}`);
             
             if (json.status === 'ok' && json.lat && json.lon) {
               resolve({
@@ -319,9 +323,11 @@ class LocationService {
                 source: 'unwiredlabs',
               });
             } else {
+              console.log(`⚠️ [LOCATION_SVC] UnwiredLabs: ${json.message || json.status || 'no data'}`);
               resolve(null);
             }
           } catch (parseErr) {
+            console.log(`❌ [LOCATION_SVC] UnwiredLabs parse error: ${parseErr.message}, raw: ${data.substring(0, 200)}`);
             reject(new Error(`فشل تحليل رد UnwiredLabs: ${parseErr.message}`));
           }
         });
