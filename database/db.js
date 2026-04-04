@@ -8,12 +8,11 @@ const pool = new Pool(config.database);
 // معالجة الأخطاء
 pool.on('error', (err, client) => {
   logger.error('خطأ غير متوقع في قاعدة البيانات:', err);
-  console.error('❌ [DB] خطأ في Pool:', err);
+  console.error('❌ [DB] خطأ في Pool:', err.message);
 });
 
 // معالجة الاتصال
 pool.on('connect', () => {
-  logger.info('تم الاتصال بقاعدة البيانات بنجاح');
   console.log('✅ [DB] اتصال جديد بقاعدة البيانات');
 });
 
@@ -30,6 +29,38 @@ async function testConnection() {
     logger.error('فشل الاتصال بقاعدة البيانات:', err.message);
     console.error('❌ [DB] فشل اختبار الاتصال:', err.message);
     return false;
+  }
+}
+
+/**
+ * ⭐ تهيئة قاعدة البيانات - إنشاء الجداول إذا لم تكن موجودة
+ */
+async function initializeDatabase() {
+  const client = await pool.connect();
+  try {
+    console.log('🔧 [DB] جاري تهيئة قاعدة البيانات...');
+
+    const fs = require('fs');
+    const path = require('path');
+    const schemaPath = path.join(__dirname, 'schema.sql');
+    const schema = fs.readFileSync(schemaPath, 'utf8');
+
+    try {
+      await client.query(schema);
+      console.log('✅ [DB] تم تهيئة قاعدة البيانات بنجاح');
+    } catch (queryErr) {
+      if (queryErr.message && queryErr.message.includes('already exists')) {
+        console.log('ℹ️ [DB] الجداول موجودة مسبقاً');
+      } else {
+        throw queryErr;
+      }
+    }
+  } catch (err) {
+    console.error('❌ [DB] خطأ في تهيئة قاعدة البيانات:', err.message);
+    // لا نرمي الخطأ - نسمح للسيرفر بالاستمرار
+    logger.error('خطأ في تهيئة قاعدة البيانات:', err.message);
+  } finally {
+    client.release();
   }
 }
 
@@ -71,13 +102,11 @@ async function getOrCreateDevice(imei) {
 async function saveLocation(data) {
   const client = await pool.connect();
   try {
-    console.log(`\n💾 [DB] محاولة حفظ موقع للجهاز ${data.imei}`);
-    console.log(`   GPS Valid: ${data.gpsValid}`);
-    console.log(`   MCC: ${data.mcc}, MNC: ${data.mnc}`);
-    console.log(`   LAC: ${data.lac}, CID: ${data.cellId}`);
+    console.log(`\n💾 [DB] حفظ موقع للجهاز ${data.imei}`);
+    console.log(`   GPS Valid: ${data.gpsValid}, Lat: ${data.latitude}, Lng: ${data.longitude}`);
+    console.log(`   MCC: ${data.mcc}, MNC: ${data.mnc}, LAC: ${data.lac}, CID: ${data.cellId}`);
     
     const deviceId = await getOrCreateDevice(data.imei);
-    console.log(`   Device ID: ${deviceId}`);
 
     const result = await client.query(`
       INSERT INTO locations (
@@ -90,7 +119,7 @@ async function saveLocation(data) {
     `, [
       deviceId, 
       data.imei, 
-      data.timestamp, 
+      data.timestamp || new Date(), 
       data.latitude || 0, 
       data.longitude || 0,
       data.speed || 0, 
@@ -109,15 +138,12 @@ async function saveLocation(data) {
     ]);
 
     const insertedId = result.rows[0].id;
-    console.log(`✅ [DB] تم حفظ الموقع بنجاح - ID: ${insertedId}`);
-    logger.info(`تم حفظ موقع للجهاز ${data.imei}`);
+    console.log(`✅ [DB] تم حفظ الموقع - ID: ${insertedId}`);
+    logger.info(`تم حفظ موقع للجهاز ${data.imei} (GPS: ${data.gpsValid}, Lat: ${data.latitude}, Lng: ${data.longitude})`);
     return true;
 
   } catch (err) {
     console.error(`❌ [DB] خطأ في حفظ الموقع:`, err.message);
-    console.error(`   Error Code: ${err.code}`);
-    console.error(`   Error Detail: ${err.detail}`);
-    console.error(`   Stack: ${err.stack}`);
     logger.error('خطأ في حفظ الموقع:', err.message);
     return false;
   } finally {
@@ -125,24 +151,29 @@ async function saveLocation(data) {
   }
 }
 
-// دالة لحفظ القياسات الصحية
+/**
+ * ⭐ حفظ القياسات الصحية - مُصلح مع timestamp صريح
+ */
 async function saveHealthData(data) {
   const client = await pool.connect();
   try {
-    console.log(`\n💾 [DB] محاولة حفظ قياسات صحية للجهاز ${data.imei}`);
+    console.log(`\n💾 [DB] حفظ قياسات صحية للجهاز ${data.imei}`);
+    console.log(`   HR: ${data.heartRate || '-'}, BP: ${data.systolic || '-'}/${data.diastolic || '-'}, SpO2: ${data.spo2 || '-'}, Temp: ${data.temperature || '-'}`);
     
     const deviceId = await getOrCreateDevice(data.imei);
 
     const result = await client.query(`
       INSERT INTO health_data (
-        device_id, imei, heart_rate, blood_pressure_systolic, 
+        device_id, imei, timestamp,
+        heart_rate, blood_pressure_systolic, 
         blood_pressure_diastolic, spo2, blood_sugar, 
         body_temperature, battery_level
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING id
     `, [
       deviceId, 
       data.imei, 
+      data.timestamp || new Date(),
       data.heartRate || null,
       data.systolic || null,
       data.diastolic || null, 
@@ -153,14 +184,13 @@ async function saveHealthData(data) {
     ]);
 
     const insertedId = result.rows[0].id;
-    console.log(`✅ [DB] تم حفظ القياسات الصحية بنجاح - ID: ${insertedId}`);
-    logger.info(`تم حفظ قياسات صحية للجهاز ${data.imei}`);
+    console.log(`✅ [DB] تم حفظ القياسات الصحية - ID: ${insertedId}`);
+    logger.info(`تم حفظ قياسات صحية للجهاز ${data.imei} (HR: ${data.heartRate || '-'}, BP: ${data.systolic || '-'}/${data.diastolic || '-'})`);
     return true;
 
   } catch (err) {
     console.error(`❌ [DB] خطأ في حفظ القياسات الصحية:`, err.message);
     console.error(`   Error Code: ${err.code}`);
-    console.error(`   Stack: ${err.stack}`);
     logger.error('خطأ في حفظ القياسات الصحية:', err.message);
     return false;
   } finally {
@@ -172,8 +202,7 @@ async function saveHealthData(data) {
 async function saveAlert(data) {
   const client = await pool.connect();
   try {
-    console.log(`\n💾 [DB] محاولة حفظ إنذار للجهاز ${data.imei}`);
-    console.log(`   نوع الإنذار: ${data.alertType}`);
+    console.log(`\n💾 [DB] حفظ إنذار للجهاز ${data.imei} - نوع: ${data.alertType}`);
     
     const deviceId = await getOrCreateDevice(data.imei);
 
@@ -193,7 +222,7 @@ async function saveAlert(data) {
     ]);
 
     const insertedId = result.rows[0].id;
-    console.log(`✅ [DB] تم حفظ الإنذار بنجاح - ID: ${insertedId}`);
+    console.log(`✅ [DB] تم حفظ الإنذار - ID: ${insertedId}`);
     logger.warn(`⚠️ إنذار جديد من الجهاز ${data.imei}: ${data.alertType}`);
     return true;
 
@@ -232,37 +261,13 @@ async function updateDailySteps(imei, steps, rollFrequency) {
   }
 }
 
-// دالة لتسجيل أمر مُرسل
-async function logCommand(imei, commandType, commandData, journalNo) {
-  const client = await pool.connect();
-  try {
-    const deviceId = await getOrCreateDevice(imei);
-
-    const result = await client.query(`
-      INSERT INTO commands_log (device_id, imei, command_type, command_data, journal_no)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id
-    `, [deviceId, imei, commandType, commandData, journalNo]);
-
-    console.log(`✅ [DB] تم تسجيل الأمر - ID: ${result.rows[0].id}`);
-    return result.rows[0].id;
-
-  } catch (err) {
-    console.error(`❌ [DB] خطأ في تسجيل الأمر:`, err.message);
-    logger.error('خطأ في تسجيل الأمر:', err.message);
-    return null;
-  } finally {
-    client.release();
-  }
-}
-
 module.exports = {
   pool,
   testConnection,
+  initializeDatabase,
   getOrCreateDevice,
   saveLocation,
   saveHealthData,
   saveAlert,
   updateDailySteps,
-  logCommand,
 };

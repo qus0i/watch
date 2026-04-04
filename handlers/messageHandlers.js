@@ -1,6 +1,7 @@
 const logger = require('../utils/logger');
 const db = require('../database/db');
 const ProtocolBuilder = require('../protocol/builder');
+const config = require('../config');
 
 /**
  * معالجات الرسائل
@@ -29,10 +30,19 @@ class MessageHandlers {
       console.log(`📤 [LOGIN] رد: ${response}`);
       logger.debug(`📤 رد تسجيل الدخول: ${response}`);
       
-      // بدء القياسات الدورية بعد تسجيل الدخول
+      // تعطيل NOT_WEAR sensor فوراً
+      setTimeout(() => {
+        if (!socket.writable || socket.destroyed) return;
+        const journalNo = ProtocolBuilder.generateJournalNo();
+        const notWearCmd = `IWBP84,${data.imei},${journalNo},0#`;
+        console.log(`👕 [LOGIN] تعطيل NOT_WEAR: ${notWearCmd}`);
+        socket.write(notWearCmd);
+      }, 2000);
+
+      // بدء القياسات الدورية بعد تسجيل الدخول (بعد 10 ثوان)
       setTimeout(() => {
         this.startPeriodicMeasurements(socket);
-      }, 3000);
+      }, 10000);
       
     } catch (err) {
       console.error(`❌ [LOGIN] خطأ:`, err.message);
@@ -72,7 +82,7 @@ class MessageHandlers {
   }
 
   /**
-   * معالجة رسالة LBS (أبراج الشبكة)
+   * معالجة رسالة LBS (أبراج الشبكة) مع تحويل الإحداثيات عبر OpenCellID
    */
   static async handleMultipleBases(data, socket) {
     try {
@@ -83,10 +93,8 @@ class MessageHandlers {
       const afterCommand = message.substring(6, message.length - 1);
       const parts = afterCommand.split(',');
       
-      console.log(`🔍 محاولة تحليل رسالة:`);
-      console.log(`   📨 الرسالة الكاملة: ${message}`);
-      console.log(`   الطول: ${message.length}`);
-      console.log(`   📦 البيانات: ${afterCommand}`);
+      console.log(`🔍 تحليل رسالة LBS:`);
+      console.log(`   📨 الرسالة: ${message}`);
       console.log(`   🔢 عدد الأجزاء: ${parts.length}`);
       
       if (parts.length < 7) {
@@ -132,12 +140,30 @@ class MessageHandlers {
         }
       }
 
+      // ⭐ تحويل LBS إلى إحداثيات عبر OpenCellID
+      let latitude = 0;
+      let longitude = 0;
+
+      try {
+        const LocationService = require('../services/locationService');
+        const resolved = await LocationService.resolveLocation(mcc, mnc, lac, cellId, wifiData);
+        if (resolved) {
+          latitude = resolved.latitude;
+          longitude = resolved.longitude;
+          console.log(`   ✅ تم تحويل LBS → إحداثيات: ${latitude}, ${longitude}`);
+        } else {
+          console.log(`   ⚠️ فشل تحويل LBS إلى إحداثيات - حفظ بدون إحداثيات`);
+        }
+      } catch (locErr) {
+        console.error(`   ❌ خطأ في خدمة الموقع: ${locErr.message}`);
+      }
+
       // حفظ الموقع
       const locationData = {
         imei: socket.imei,
         timestamp: new Date(),
-        latitude: 0,
-        longitude: 0,
+        latitude: latitude,
+        longitude: longitude,
         speed: 0,
         direction: 0,
         gpsValid: false,
@@ -156,8 +182,7 @@ class MessageHandlers {
       const saved = await db.saveLocation(locationData);
       
       if (saved) {
-        console.log(`✅ تم حفظ موقع LBS بنجاح`);
-        console.log(`   📊 MCC:${mcc}, MNC:${mnc}, LAC:${lac}, CID:${cellId}`);
+        console.log(`✅ تم حفظ موقع LBS بنجاح (lat: ${latitude}, lng: ${longitude})`);
       } else {
         console.error(`❌ فشل حفظ موقع LBS`);
       }
@@ -257,9 +282,10 @@ class MessageHandlers {
       if (data.heartRate && data.heartRate > 0 && data.heartRate < 200) {
         await db.saveHealthData({
           imei: data.imei,
+          timestamp: new Date(),
           heartRate: data.heartRate,
         });
-        console.log(`✅ تم حفظ قياس النبض`);
+        console.log(`✅ تم حفظ قياس النبض: ${data.heartRate} bpm`);
       } else {
         console.warn(`⚠️ قياس نبض غير صحيح: ${data.heartRate}`);
       }
@@ -293,6 +319,7 @@ class MessageHandlers {
       if (validHR || validBP) {
         await db.saveHealthData({
           imei: data.imei,
+          timestamp: new Date(),
           heartRate: validHR ? data.heartRate : null,
           systolic: validBP ? data.systolic : null,
           diastolic: validBP ? data.diastolic : null,
@@ -329,6 +356,7 @@ class MessageHandlers {
       // تحقق من القيم وحفظ فقط الصحيحة
       const healthData = {
         imei: data.imei,
+        timestamp: new Date(),
       };
 
       if (data.heartRate && data.heartRate > 0 && data.heartRate < 200) {
@@ -346,7 +374,7 @@ class MessageHandlers {
       }
 
       // احفظ فقط إذا في قيمة واحدة على الأقل صحيحة
-      if (Object.keys(healthData).length > 1) {
+      if (Object.keys(healthData).length > 2) { // imei + timestamp + at least 1 value
         await db.saveHealthData(healthData);
         console.log(`✅ تم حفظ القياسات الكاملة`);
       } else {
@@ -379,10 +407,11 @@ class MessageHandlers {
       if (data.temperature && data.temperature > 30 && data.temperature < 45) {
         await db.saveHealthData({
           imei: data.imei,
+          timestamp: new Date(),
           temperature: data.temperature,
           batteryLevel: data.batteryLevel,
         });
-        console.log(`✅ تم حفظ قياس الحرارة`);
+        console.log(`✅ تم حفظ قياس الحرارة: ${data.temperature}°C`);
       } else {
         console.warn(`⚠️ قياس حرارة غير صحيح: ${data.temperature}°C`);
       }
@@ -397,7 +426,8 @@ class MessageHandlers {
   }
 
   /**
-   * بدء القياسات الدورية
+   * ⭐ بدء القياسات الدورية - مُصلح بتأخير 60 ثانية بين كل قياس
+   * الساعة تحتاج 30-60 ثانية لكل قياس طبي
    */
   static startPeriodicMeasurements(socket) {
     if (!socket.imei) {
@@ -405,79 +435,93 @@ class MessageHandlers {
       return;
     }
 
+    const delaySeconds = config.healthMonitoring.delayBetweenCommands || 60;
+    const intervalMinutes = config.healthMonitoring.intervalMinutes || 5;
+    
     console.log(`\n🔄 [PERIODIC] بدء القياسات الدورية للجهاز ${socket.imei}`);
+    console.log(`   ⏱️ التأخير بين القياسات: ${delaySeconds} ثانية`);
+    console.log(`   🔁 الفاصل بين الدورات: ${intervalMinutes} دقائق`);
 
-    // طلب موقع فوري أولاً
-    setTimeout(() => {
-      const journalNo = ProtocolBuilder.generateJournalNo();
-      const locationCmd = ProtocolBuilder.buildLocationRequest(socket.imei, journalNo);
-      console.log(`📍 [PERIODIC] طلب موقع: ${locationCmd}`);
-      socket.write(locationCmd);
-    }, 2000);
-
-    // تعطيل NOT_WEAR sensor
-    setTimeout(() => {
-      const journalNo = ProtocolBuilder.generateJournalNo();
-      const notWearCmd = `IWBP84,${socket.imei},${journalNo},0#`;
-      console.log(`👕 [PERIODIC] تعطيل NOT_WEAR: ${notWearCmd}`);
-      socket.write(notWearCmd);
-    }, 4000);
-
-    // دورة القياسات (كل 5 دقائق)
-    const measurementCycle = () => {
+    /**
+     * تنفيذ دورة قياسات كاملة بشكل متسلسل
+     * كل قياس ينتظر delaySeconds قبل القياس التالي
+     */
+    const measurementCycle = async () => {
       if (!socket.writable || socket.destroyed) {
         console.log(`⚠️ [PERIODIC] الاتصال مقطوع - إيقاف القياسات`);
+        if (socket.measurementInterval) {
+          clearInterval(socket.measurementInterval);
+        }
         return;
       }
 
-      console.log(`\n🔄 [PERIODIC] دورة قياسات جديدة للجهاز ${socket.imei}`);
+      console.log(`\n🔄 [PERIODIC] ═══ دورة قياسات جديدة للجهاز ${socket.imei} ═══`);
+      console.log(`   ⏰ الوقت: ${new Date().toISOString()}`);
 
-      // 1. قياس النبض
-      setTimeout(() => {
-        const journalNo = ProtocolBuilder.generateJournalNo();
-        const hrCmd = ProtocolBuilder.buildHeartRateTestCommand(socket.imei, journalNo);
-        console.log(`❤️ [PERIODIC] طلب نبض: ${hrCmd}`);
-        socket.write(hrCmd);
-      }, 1000);
+      const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+      const delayMs = delaySeconds * 1000;
 
-      // 2. قياس الضغط
-      setTimeout(() => {
-        const journalNo = ProtocolBuilder.generateJournalNo();
-        const bpCmd = ProtocolBuilder.buildBloodPressureTestCommand(socket.imei, journalNo);
-        console.log(`💉 [PERIODIC] طلب ضغط: ${bpCmd}`);
-        socket.write(bpCmd);
-      }, 3000);
+      try {
+        // 1. طلب موقع أولاً
+        if (socket.writable && !socket.destroyed) {
+          const journalNo = ProtocolBuilder.generateJournalNo();
+          const locationCmd = ProtocolBuilder.buildLocationRequest(socket.imei, journalNo);
+          console.log(`📍 [PERIODIC] (1/5) طلب موقع: ${locationCmd}`);
+          socket.write(locationCmd);
+        }
 
-      // 3. قياس الحرارة
-      setTimeout(() => {
-        const journalNo = ProtocolBuilder.generateJournalNo();
-        const tempCmd = ProtocolBuilder.buildTemperatureTestCommand(socket.imei, journalNo);
-        console.log(`🌡️ [PERIODIC] طلب حرارة: ${tempCmd}`);
-        socket.write(tempCmd);
-      }, 5000);
+        await delay(delayMs);
 
-      // 4. قياس الأكسجين
-      setTimeout(() => {
-        const journalNo = ProtocolBuilder.generateJournalNo();
-        const spo2Cmd = ProtocolBuilder.buildOxygenTestCommand(socket.imei, journalNo);
-        console.log(`🫁 [PERIODIC] طلب أكسجين: ${spo2Cmd}`);
-        socket.write(spo2Cmd);
-      }, 7000);
+        // 2. قياس النبض
+        if (socket.writable && !socket.destroyed) {
+          const journalNo = ProtocolBuilder.generateJournalNo();
+          const hrCmd = ProtocolBuilder.buildHeartRateTestCommand(socket.imei, journalNo);
+          console.log(`❤️ [PERIODIC] (2/5) طلب نبض: ${hrCmd}`);
+          socket.write(hrCmd);
+        }
 
-      // 5. طلب موقع
-      setTimeout(() => {
-        const journalNo = ProtocolBuilder.generateJournalNo();
-        const locationCmd = ProtocolBuilder.buildLocationRequest(socket.imei, journalNo);
-        console.log(`📍 [PERIODIC] طلب موقع: ${locationCmd}`);
-        socket.write(locationCmd);
-      }, 9000);
+        await delay(delayMs);
+
+        // 3. قياس الضغط
+        if (socket.writable && !socket.destroyed) {
+          const journalNo = ProtocolBuilder.generateJournalNo();
+          const bpCmd = ProtocolBuilder.buildBloodPressureTestCommand(socket.imei, journalNo);
+          console.log(`💉 [PERIODIC] (3/5) طلب ضغط: ${bpCmd}`);
+          socket.write(bpCmd);
+        }
+
+        await delay(delayMs);
+
+        // 4. قياس الحرارة
+        if (socket.writable && !socket.destroyed) {
+          const journalNo = ProtocolBuilder.generateJournalNo();
+          const tempCmd = ProtocolBuilder.buildTemperatureTestCommand(socket.imei, journalNo);
+          console.log(`🌡️ [PERIODIC] (4/5) طلب حرارة: ${tempCmd}`);
+          socket.write(tempCmd);
+        }
+
+        await delay(delayMs);
+
+        // 5. قياس الأكسجين
+        if (socket.writable && !socket.destroyed) {
+          const journalNo = ProtocolBuilder.generateJournalNo();
+          const spo2Cmd = ProtocolBuilder.buildOxygenTestCommand(socket.imei, journalNo);
+          console.log(`🫁 [PERIODIC] (5/5) طلب أكسجين: ${spo2Cmd}`);
+          socket.write(spo2Cmd);
+        }
+
+        console.log(`✅ [PERIODIC] ═══ انتهت دورة القياسات للجهاز ${socket.imei} ═══\n`);
+
+      } catch (err) {
+        console.error(`❌ [PERIODIC] خطأ في دورة القياسات: ${err.message}`);
+      }
     };
 
-    // أول دورة بعد 10 ثواني
-    setTimeout(measurementCycle, 10000);
+    // أول دورة بعد 5 ثوان
+    setTimeout(measurementCycle, 5000);
 
-    // دورات متكررة كل 5 دقائق
-    const intervalId = setInterval(measurementCycle, 5 * 60 * 1000);
+    // دورات متكررة
+    const intervalId = setInterval(measurementCycle, intervalMinutes * 60 * 1000);
 
     // حفظ الـ interval للإلغاء لاحقاً
     socket.measurementInterval = intervalId;
@@ -526,6 +570,30 @@ class MessageHandlers {
         case 'MULTIPLE_BASES':
           await this.handleMultipleBases(parsedData, socket);
           break;
+        
+        // ⭐ رسائل التأكيد (ACK) - مجرد logging
+        case 'LOCATION_REQUEST_ACK':
+          console.log(`✅ [ACK] الساعة استلمت طلب الموقع`);
+          break;
+        case 'HEART_RATE_TEST_ACK':
+          console.log(`✅ [ACK] الساعة بدأت قياس النبض`);
+          break;
+        case 'BLOOD_PRESSURE_TEST_ACK':
+          console.log(`✅ [ACK] الساعة بدأت قياس الضغط`);
+          break;
+        case 'TEMPERATURE_TEST_ACK':
+          console.log(`✅ [ACK] الساعة بدأت قياس الحرارة`);
+          break;
+        case 'OXYGEN_TEST_ACK':
+          console.log(`✅ [ACK] الساعة بدأت قياس الأكسجين`);
+          break;
+        case 'SOS_ACK':
+          console.log(`✅ [ACK] الساعة استلمت أمر SOS`);
+          break;
+        case 'UNKNOWN':
+          console.warn(`⚠️ رسالة غير معروفة: ${parsedData.commandType}`);
+          break;
+        
         default:
           console.warn(`⚠️ نوع رسالة غير معالج: ${parsedData.type}`);
           logger.warn(`نوع رسالة غير معالج: ${parsedData.type}`);

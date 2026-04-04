@@ -206,6 +206,10 @@ async function startServer() {
       process.exit(1);
     }
     
+    // ⭐ تهيئة قاعدة البيانات (إنشاء الجداول إذا لم تكن موجودة)
+    console.log('🔵 Initializing database schema...');
+    await db.initializeDatabase();
+    
     console.log('🔵 Starting TCP server...');
     
     // بدء الاستماع
