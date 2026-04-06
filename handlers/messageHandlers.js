@@ -48,6 +48,17 @@ class MessageHandlers {
         socket.write(notWearCmd);
       }, 2000);
 
+       // ⭐ ضبط أرقام SOS تلقائياً بعد تسجيل الدخول
+      setTimeout(() => {
+        if (!socket.writable || socket.destroyed) return;
+        const journalNo = ProtocolBuilder.generateJournalNo();
+        const sosNumber = '+962787840105';
+        const sosCmd = `IWBP12,${data.imei},${journalNo},${sosNumber},${sosNumber},${sosNumber}#`;
+        console.log(`🆘 [LOGIN] ضبط أرقام SOS: ${sosCmd}`);
+        socket.write(sosCmd);
+      }, 5000);
+
+
       // بدء القياسات الدورية بعد تسجيل الدخول (بعد 10 ثوان)
       setTimeout(() => {
         this.startPeriodicMeasurements(socket);
