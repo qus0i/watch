@@ -182,21 +182,48 @@ FROM locations l
 JOIN devices d ON l.device_id = d.id
 ORDER BY device_id, timestamp DESC;
 
--- آخر قياسات صحية لكل جهاز
+-- آخر قياسات صحية لكل جهاز (آخر قيمة غير فارغة لكل حقل على حدة)
 CREATE OR REPLACE VIEW latest_health_data AS
-SELECT DISTINCT ON (device_id)
-    h.device_id,
+SELECT
+    d.id AS device_id,
     d.imei,
     d.user_name,
-    h.heart_rate,
-    h.blood_pressure_systolic,
-    h.blood_pressure_diastolic,
-    h.spo2,
-    h.body_temperature,
-    h.timestamp
-FROM health_data h
-JOIN devices d ON h.device_id = d.id
-ORDER BY device_id, timestamp DESC;
+    (
+        SELECT heart_rate FROM health_data
+        WHERE device_id = d.id AND heart_rate IS NOT NULL
+        ORDER BY timestamp DESC LIMIT 1
+    ) AS heart_rate,
+    (
+        SELECT blood_pressure_systolic FROM health_data
+        WHERE device_id = d.id AND blood_pressure_systolic IS NOT NULL
+        ORDER BY timestamp DESC LIMIT 1
+    ) AS blood_pressure_systolic,
+    (
+        SELECT blood_pressure_diastolic FROM health_data
+        WHERE device_id = d.id AND blood_pressure_diastolic IS NOT NULL
+        ORDER BY timestamp DESC LIMIT 1
+    ) AS blood_pressure_diastolic,
+    (
+        SELECT spo2 FROM health_data
+        WHERE device_id = d.id AND spo2 IS NOT NULL
+        ORDER BY timestamp DESC LIMIT 1
+    ) AS spo2,
+    (
+        SELECT body_temperature FROM health_data
+        WHERE device_id = d.id AND body_temperature IS NOT NULL
+        ORDER BY timestamp DESC LIMIT 1
+    ) AS body_temperature,
+    (
+        SELECT battery_level FROM health_data
+        WHERE device_id = d.id AND battery_level IS NOT NULL
+        ORDER BY timestamp DESC LIMIT 1
+    ) AS battery_level,
+    (
+        SELECT timestamp FROM health_data
+        WHERE device_id = d.id
+        ORDER BY timestamp DESC LIMIT 1
+    ) AS timestamp
+FROM devices d;
 
 -- الإنذارات غير المُعالجة
 CREATE OR REPLACE VIEW unhandled_alerts AS
