@@ -52,7 +52,7 @@ class MessageHandlers {
       setTimeout(() => {
         if (!socket.writable || socket.destroyed) return;
         const journalNo = ProtocolBuilder.generateJournalNo();
-        const sosNumber = '+962787840105';
+        const sosNumber = '+16627056776';
         const sosCmd = `IWBP12,${data.imei},${journalNo},${sosNumber},${sosNumber},${sosNumber}#`;
         console.log(`🆘 [LOGIN] ضبط أرقام SOS: ${sosCmd}`);
         socket.write(sosCmd);
