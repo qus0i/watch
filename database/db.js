@@ -443,6 +443,364 @@ async function saveLocationReturningId(data) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// v2 helpers (Health Watch JSON/TCP) — additive only.
+// ما تلمس الدوال القديمة فوق — هذي دوال موازية تستخدم نفس الجداول
+// مع watch_type='health_v2'.
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Get or create a v2 device. سيوسم بـ watch_type='health_v2'.
+ * إذا الـ IMEI موجود مسبقاً (سواء قديم أو جديد)، نُحدّث آخر اتصال
+ * ولا نُغيّر الـ watch_type لو كان iw_legacy → health_v2 (ما نخرّب أجهزة قائمة).
+ */
+async function getOrCreateDeviceV2(imei, deviceModel = null, extras = {}) {
+  const client = await pool.connect();
+  try {
+    let result = await client.query(
+      'SELECT id, watch_type FROM devices WHERE imei = $1',
+      [imei]
+    );
+
+    if (result.rows.length > 0) {
+      const id = result.rows[0].id;
+      const currentType = result.rows[0].watch_type;
+
+      // حدّث المعلومات الأساسية والمتاحة فقط
+      const sets = ['last_connection = NOW()'];
+      const values = [];
+      let i = 1;
+
+      // إذا الجهاز جديد (مفيش watch_type أو 'iw_legacy' افتراضي وما لُقي بقاعدة قديمة)،
+      // نوسمه health_v2 فقط لو كان NULL أو ما تعيّن صراحة.
+      if (!currentType || currentType === 'iw_legacy') {
+        // خلّي iw_legacy على حالها لو كانت الساعة قديمة فعلاً.
+        // لكن لو سجّلت دخول عبر v2 protocol فالغالب هي v2 — نحدّثها.
+        sets.push(`watch_type = $${i++}`);
+        values.push('health_v2');
+      }
+      if (deviceModel) {
+        sets.push(`device_model = $${i++}`);
+        values.push(deviceModel);
+      }
+      if (extras.firmwareV !== undefined) {
+        sets.push(`firmware_v = $${i++}`);
+        values.push(extras.firmwareV);
+      }
+      if (extras.batteryLevel !== undefined && extras.batteryLevel !== null) {
+        sets.push(`battery_level = $${i++}`);
+        values.push(extras.batteryLevel);
+      }
+      if (extras.batteryState !== undefined && extras.batteryState !== null) {
+        sets.push(`battery_state = $${i++}`);
+        values.push(extras.batteryState);
+      }
+      if (extras.bindStatus !== undefined && extras.bindStatus !== null) {
+        sets.push(`bind_status = $${i++}`);
+        values.push(extras.bindStatus);
+      }
+
+      values.push(imei);
+      await client.query(
+        `UPDATE devices SET ${sets.join(', ')} WHERE imei = $${i}`,
+        values
+      );
+      return id;
+    }
+
+    // إنشاء جهاز جديد بـ watch_type='health_v2'
+    const insertCols = ['imei', 'last_connection', 'watch_type'];
+    const insertVals = ['$1', 'NOW()', '$2'];
+    const params = [imei, 'health_v2'];
+    let p = 3;
+
+    if (deviceModel) {
+      insertCols.push('device_model'); insertVals.push(`$${p++}`); params.push(deviceModel);
+    }
+    if (extras.firmwareV !== undefined) {
+      insertCols.push('firmware_v'); insertVals.push(`$${p++}`); params.push(extras.firmwareV);
+    }
+    if (extras.batteryLevel !== undefined && extras.batteryLevel !== null) {
+      insertCols.push('battery_level'); insertVals.push(`$${p++}`); params.push(extras.batteryLevel);
+    }
+    if (extras.batteryState !== undefined && extras.batteryState !== null) {
+      insertCols.push('battery_state'); insertVals.push(`$${p++}`); params.push(extras.batteryState);
+    }
+    if (extras.bindStatus !== undefined && extras.bindStatus !== null) {
+      insertCols.push('bind_status'); insertVals.push(`$${p++}`); params.push(extras.bindStatus);
+    }
+
+    const insertSql = `INSERT INTO devices (${insertCols.join(', ')}) VALUES (${insertVals.join(', ')}) RETURNING id`;
+    const inserted = await client.query(insertSql, params);
+
+    const newId = inserted.rows[0].id;
+    console.log(`✅ [DB-v2] جهاز جديد (health_v2) imei=${imei} id=${newId}`);
+    logger.info(`v2 device registered imei=${imei} id=${newId}`);
+    return newId;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * تحديث heartbeat fields على الجهاز.
+ */
+async function updateDeviceHeartbeatV2(imei, batteryLevel, batteryState) {
+  const client = await pool.connect();
+  try {
+    const sets = ['last_heartbeat = NOW()', 'last_connection = NOW()'];
+    const values = [];
+    let i = 1;
+    if (batteryLevel !== undefined && batteryLevel !== null) {
+      sets.push(`battery_level = $${i++}`); values.push(batteryLevel);
+    }
+    if (batteryState !== undefined && batteryState !== null) {
+      sets.push(`battery_state = $${i++}`); values.push(batteryState);
+    }
+    values.push(imei);
+    await client.query(
+      `UPDATE devices SET ${sets.join(', ')} WHERE imei = $${i}`,
+      values
+    );
+    return true;
+  } catch (err) {
+    console.error('❌ [DB-v2] updateDeviceHeartbeatV2:', err.message);
+    return false;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * حفظ قياسة صحية v2 — تستخدم نفس جدول health_data القديم.
+ *
+ * @param {string} imei
+ * @param {object} fields — heartRate, systolic, diastolic, spo2, bloodSugar, temperature, batteryLevel
+ * @param {Date}   [timestamp]
+ */
+async function saveHealthDataV2(imei, fields, timestamp = null) {
+  const client = await pool.connect();
+  try {
+    const deviceId = await getOrCreateDeviceV2(imei);
+    const result = await client.query(
+      `INSERT INTO health_data (
+         device_id, imei, timestamp,
+         heart_rate, blood_pressure_systolic,
+         blood_pressure_diastolic, spo2, blood_sugar,
+         body_temperature, battery_level
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+      [
+        deviceId,
+        imei,
+        timestamp || new Date(),
+        fields.heartRate ?? null,
+        fields.systolic ?? null,
+        fields.diastolic ?? null,
+        fields.spo2 ?? null,
+        fields.bloodSugar ?? null,
+        fields.temperature ?? null,
+        fields.batteryLevel ?? null,
+      ]
+    );
+    const id = result.rows[0].id;
+    console.log(
+      `💾 [DB-v2] health_data #${id} imei=${imei} ` +
+      `HR=${fields.heartRate ?? '-'} BP=${fields.systolic ?? '-'}/${fields.diastolic ?? '-'} ` +
+      `SpO2=${fields.spo2 ?? '-'} T=${fields.temperature ?? '-'}`
+    );
+    return id;
+  } catch (err) {
+    console.error('❌ [DB-v2] saveHealthDataV2:', err.message);
+    logger.error('v2 saveHealthData error:', err.message);
+    return null;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * حفظ موقع v2 — تستخدم نفس جدول locations القديم.
+ *
+ * @param {string} imei
+ * @param {object} payload — gps:{lat,lon,height,satelliteNum,GSM}, baseStation:[...], wifi:[...]
+ * @param {Date}   [timestamp]
+ */
+async function saveLocationV2(imei, payload, timestamp = null) {
+  const client = await pool.connect();
+  try {
+    const deviceId = await getOrCreateDeviceV2(imei);
+
+    const gps = payload.gps || null;
+    const lat = gps && gps.lat !== undefined ? parseFloat(gps.lat) : 0;
+    const lon = gps && gps.lon !== undefined ? parseFloat(gps.lon) : 0;
+    const satCount = gps && gps.satelliteNum !== undefined ? parseInt(gps.satelliteNum, 10) : 0;
+    const gsm = gps && gps.GSM !== undefined ? parseInt(gps.GSM, 10) : 0;
+    const gpsValid = !!(gps && Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0));
+
+    // أول base station لو موجود
+    let mcc = 0, mnc = 0, lac = 0, cellId = 0;
+    if (Array.isArray(payload.baseStation) && payload.baseStation.length > 0) {
+      const bs = payload.baseStation[0];
+      mcc = bs.mcc ?? 0;
+      mnc = bs.mnc ?? 0;
+      lac = bs.lac ?? 0;
+      cellId = bs.ci ?? bs.cellId ?? 0;
+    }
+
+    const result = await client.query(
+      `INSERT INTO locations (
+         device_id, imei, timestamp, latitude, longitude, speed, direction,
+         gps_valid, satellite_count, gsm_signal, battery_level,
+         mcc, mnc, lac, cell_id, wifi_data,
+         fortification_state, working_mode
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+       RETURNING id`,
+      [
+        deviceId,
+        imei,
+        timestamp || new Date(),
+        Number.isFinite(lat) ? lat : 0,
+        Number.isFinite(lon) ? lon : 0,
+        0, // speed (not provided in upLocation envelope)
+        0, // direction
+        gpsValid,
+        satCount,
+        gsm,
+        payload.batteryLevel ?? 0,
+        mcc, mnc, lac, cellId,
+        JSON.stringify(payload.wifi || payload.Wifi || []),
+        0, // fortificationState
+        0, // workingMode
+      ]
+    );
+    const id = result.rows[0].id;
+    console.log(
+      `💾 [DB-v2] location #${id} imei=${imei} ${gpsValid ? `${lat.toFixed(6)},${lon.toFixed(6)}` : 'no-gps'}`
+    );
+    return id;
+  } catch (err) {
+    console.error('❌ [DB-v2] saveLocationV2:', err.message);
+    logger.error('v2 saveLocation error:', err.message);
+    return null;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * حفظ activity (run/walk/sleep/...) — في جدول v2_activity الجديد.
+ */
+async function saveActivityV2(imei, activityType, payload) {
+  const client = await pool.connect();
+  try {
+    const deviceId = await getOrCreateDeviceV2(imei);
+
+    const startMs = payload.startTime ? Number(payload.startTime) : null;
+    const endMs = payload.endTime ? Number(payload.endTime) : null;
+    const startTs = startMs ? new Date(startMs) : null;
+    const endTs = endMs ? new Date(endMs) : null;
+
+    const duration = payload.exerciseTime ? parseInt(payload.exerciseTime, 10) : null;
+    const consumed = payload.consumed ? parseInt(payload.consumed, 10) : null;
+    const mileage = payload.mileage ? parseFloat(payload.mileage) : null;
+    const stepCount = payload.Steps && payload.Steps.stepNumber
+      ? parseInt(payload.Steps.stepNumber, 10)
+      : (payload.step ? parseInt(payload.step, 10) : null);
+
+    const result = await client.query(
+      `INSERT INTO v2_activity (
+         device_id, imei, activity_type,
+         start_time, end_time, duration_seconds,
+         consumed_kcal, mileage_km, step_count, payload
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+      [
+        deviceId, imei, activityType,
+        startTs, endTs, duration,
+        consumed, mileage, stepCount,
+        JSON.stringify(payload),
+      ]
+    );
+    const id = result.rows[0].id;
+    console.log(`💾 [DB-v2] activity #${id} type=${activityType} imei=${imei}`);
+    return id;
+  } catch (err) {
+    console.error('❌ [DB-v2] saveActivityV2:', err.message);
+    return null;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * حفظ device config (upDeviceConfig).
+ */
+async function saveDeviceConfigV2(imei, configs) {
+  const client = await pool.connect();
+  try {
+    const deviceId = await getOrCreateDeviceV2(imei);
+    const result = await client.query(
+      `INSERT INTO v2_device_configs (device_id, imei, configs)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [deviceId, imei, JSON.stringify(configs || {})]
+    );
+    return result.rows[0].id;
+  } catch (err) {
+    console.error('❌ [DB-v2] saveDeviceConfigV2:', err.message);
+    return null;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Log raw v2 message (in/out) للتشخيص.
+ */
+async function logV2Message(direction, imei, msgType, ident, ref, payload) {
+  // Fire-and-forget — ما نوقف على فشله
+  pool
+    .query(
+      `INSERT INTO v2_message_log (direction, imei, msg_type, ident, ref, payload)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [direction, imei || null, msgType || null, ident || null, ref || null, JSON.stringify(payload || {})]
+    )
+    .catch((err) => {
+      // في حال الجدول لسى ما اتعمل، اسكت بدل ما نزعج اللوقز
+      if (!String(err.message).includes('relation "v2_message_log"')) {
+        console.error('⚠️ [DB-v2] logV2Message:', err.message);
+      }
+    });
+}
+
+/**
+ * Track pending request (sent from server) للـ ident matching لاحقاً.
+ */
+async function trackPendingV2Request(imei, ident, requestType, payload) {
+  try {
+    await pool.query(
+      `INSERT INTO v2_pending_requests (imei, ident, request_type, payload)
+       VALUES ($1,$2,$3,$4)`,
+      [imei, ident, requestType, JSON.stringify(payload || {})]
+    );
+  } catch (err) {
+    console.error('⚠️ [DB-v2] trackPendingV2Request:', err.message);
+  }
+}
+
+/**
+ * Mark pending request as responded.
+ */
+async function markPendingV2Responded(imei, ident) {
+  try {
+    await pool.query(
+      `UPDATE v2_pending_requests SET responded_at = NOW()
+       WHERE imei = $1 AND ident = $2 AND responded_at IS NULL`,
+      [imei, ident]
+    );
+  } catch (err) {
+    console.error('⚠️ [DB-v2] markPendingV2Responded:', err.message);
+  }
+}
+
 module.exports = {
   pool,
   testConnection,
@@ -455,4 +813,14 @@ module.exports = {
   upsertHealthData,
   updateLocationById,
   saveLocationReturningId,
+  // v2 helpers (additive)
+  getOrCreateDeviceV2,
+  updateDeviceHeartbeatV2,
+  saveHealthDataV2,
+  saveLocationV2,
+  saveActivityV2,
+  saveDeviceConfigV2,
+  logV2Message,
+  trackPendingV2Request,
+  markPendingV2Responded,
 };

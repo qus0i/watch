@@ -88,5 +88,27 @@ module.exports = {
 
     // المصدر 5: radiocells.org (مجاني بالكامل بدون API key)
     // لا يحتاج إعدادات
-  }
+  },
+
+  // ═══════════════════════════════════════════════════════════════
+  // v2 settings — Health Watch JSON/TCP Protocol (FCAF framing)
+  //
+  // ملاحظة: السيرفر v2 مش له بورت منفصل — هو multiplexed على نفس
+  // server.port (5088 افتراضياً) عبر فحص أول بايت من الاتصال:
+  //   - 0x49 ('I') → IW legacy
+  //   - 0xFC AF    → FCAF v2
+  // ═══════════════════════════════════════════════════════════════
+  v2: {
+    enabled: process.env.V2_ENABLED !== 'false', // افتراضياً مُفعَّل
+
+    // FCAF frame magic bytes
+    frameStart: Buffer.from([0xFC, 0xAF]),
+
+    // Timeouts (per-socket)
+    socketTimeoutMs: parseInt(process.env.V2_SOCKET_TIMEOUT_MS, 10) || 5 * 60 * 1000, // 5 دقائق
+    keepAliveIntervalMs: parseInt(process.env.V2_KEEPALIVE_MS, 10) || 30 * 1000,
+
+    // تسجيل كل الـ frames الواردة/الصادرة في v2_message_log (للتشخيص)
+    enableMessageLog: process.env.V2_LOG_MESSAGES !== 'false',
+  },
 };

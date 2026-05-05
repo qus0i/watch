@@ -21,26 +21,29 @@ console.log('📍 Environment:', process.env.NODE_ENV || 'development');
 const activeSockets = new Map();
 
 /**
- * إنشاء TCP Server
+ * Legacy IW handler — الـ logic الموجود سابقاً، استُخرج كما هو في
+ * دالة عشان الـ multiplexer (تحت) ينادي عليه بعد ما يتأكد إن الجهاز IW.
+ *
+ * ⚠️ ما تم تعديل أي logic داخل هذه الدالة — نقل حرفي للكود الموجود.
  */
-const server = net.createServer((socket) => {
+function legacyHandler(socket) {
   const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
-  
+
   logger.info(`🔌 اتصال جديد من: ${clientId}`);
   console.log(`🔌 اتصال جديد من: ${clientId}`);
-  
+
   // إضافة الاتصال للقائمة النشطة
   activeSockets.set(clientId, socket);
-  
+
   // معلومات الاتصال
   socket.clientId = clientId;
   socket.imei = null; // سيتم تحديده عند تسجيل الدخول
   socket.connectedAt = new Date();
-  
+
   // إعدادات الاتصال
   socket.setKeepAlive(true, config.server.keepAliveInterval);
   socket.setTimeout(180000); // 3 دقائق timeout
-  
+
   // Buffer للرسائل غير المكتملة
   let messageBuffer = '';
 
@@ -52,27 +55,27 @@ const server = net.createServer((socket) => {
       // تحويل البيانات إلى نص
       const rawData = data.toString();
       messageBuffer += rawData;
-      
+
       // Debug مفصّل
       console.log('\n═══════════════════════════════════════');
       console.log(`📥 [${clientId}] بيانات واردة:`);
       console.log(`📦 الحجم: ${rawData.length} bytes`);
       console.log(`📝 المحتوى الكامل: ${rawData}`);
       console.log('═══════════════════════════════════════\n');
-      
+
       logger.debug(`📥 بيانات واردة من ${clientId}: ${rawData.substring(0, 100)}...`);
-      
+
       // معالجة الرسائل المكتملة (المنتهية بـ #)
       while (messageBuffer.includes('#')) {
         const endIndex = messageBuffer.indexOf('#');
         const message = messageBuffer.substring(0, endIndex + 1);
         messageBuffer = messageBuffer.substring(endIndex + 1);
-        
+
         console.log(`🔄 معالجة رسالة: ${message}`);
-        
+
         // تحليل الرسالة
         const parsedData = ProtocolParser.parse(message);
-        
+
         if (parsedData) {
           console.log(`✅ تم تحليل الرسالة بنجاح - النوع: ${parsedData.type}`);
           // معالجة الرسالة
@@ -81,13 +84,13 @@ const server = net.createServer((socket) => {
           console.log(`❌ فشل تحليل الرسالة: ${message}`);
         }
       }
-      
+
       // تنظيف الـ buffer إذا كبر كثير
       if (messageBuffer.length > 10000) {
         logger.warn(`⚠️ Buffer كبير جداً، سيتم تنظيفه`);
         messageBuffer = '';
       }
-      
+
     } catch (err) {
       logger.error(`خطأ في معالجة البيانات من ${clientId}:`, err.message);
       console.error(`❌ خطأ في معالجة البيانات:`, err);
@@ -129,6 +132,58 @@ const server = net.createServer((socket) => {
       logger.debug(`✓ إغلاق اتصال نظيف: ${clientId}`);
     }
     activeSockets.delete(clientId);
+  });
+}
+
+/**
+ * إنشاء TCP Server — يفصل بين البروتوكول القديم (IW) والجديد (v2 FCAF)
+ * عبر فحص أول بايت قبل ما يوجّه:
+ *   - 0x49 ('I') → بروتوكول IW القديم → legacyHandler
+ *   - 0xFC AF   → بروتوكول v2       → handleV2Connection
+ *   - غير ذلك   → unknown → إغلاق
+ */
+const server = net.createServer((socket) => {
+  socket.once('data', (firstChunk) => {
+    if (!firstChunk || firstChunk.length === 0) {
+      try { socket.destroy(); } catch (_) { /* ignore */ }
+      return;
+    }
+
+    const firstByte = firstChunk[0];
+
+    // v2 protocol: FCAF magic header
+    if (firstByte === 0xFC && firstChunk.length >= 2 && firstChunk[1] === 0xAF) {
+      try {
+        require('./server-v2').handleV2Connection(socket, firstChunk);
+      } catch (err) {
+        logger.error(`فشل تحويل اتصال v2: ${err.message}`);
+        try { socket.destroy(); } catch (_) { /* ignore */ }
+      }
+      return;
+    }
+
+    // legacy IW protocol: 'I' = 0x49
+    if (firstByte === 0x49) {
+      // أرجع البايتات للـ stream عشان legacyHandler يقرأها كاملة
+      try {
+        socket.unshift(firstChunk);
+      } catch (err) {
+        logger.error(`فشل unshift للـ legacy: ${err.message}`);
+      }
+      legacyHandler(socket);
+      return;
+    }
+
+    // unknown protocol
+    const hex = firstByte.toString(16).padStart(2, '0').toUpperCase();
+    logger.warn(`بروتوكول غير معروف من ${socket.remoteAddress}:${socket.remotePort} — أول بايت 0x${hex}`);
+    console.log(`⚠️  بروتوكول غير معروف من ${socket.remoteAddress} — أول بايت 0x${hex}`);
+    try { socket.destroy(); } catch (_) { /* ignore */ }
+  });
+
+  // Safety: لو الجهاز ما رسل أي data خلال 30 ثانية، اقفل الاتصال
+  socket.once('error', (err) => {
+    logger.error(`❌ خطأ مبكر في الاتصال ${socket.remoteAddress}: ${err.message}`);
   });
 });
 
@@ -209,7 +264,11 @@ async function startServer() {
     // ⭐ تهيئة قاعدة البيانات (إنشاء الجداول إذا لم تكن موجودة)
     console.log('🔵 Initializing database schema...');
     await db.initializeDatabase();
-    
+
+    // ⭐ تهيئة v2 (تشغيل migrations الإضافية، آمنة لو تكررت)
+    try { await require('./server-v2').setupV2(); }
+    catch (err) { console.error('⚠️  v2 setup error (non-fatal):', err.message); }
+
     // ⭐ تحقق من إعدادات خدمات الموقع
     const googleKey = config.locationServices?.google?.apiKey;
     if (googleKey && googleKey.trim() !== '') {
