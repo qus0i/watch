@@ -58,13 +58,13 @@ function _sendHeartbeat(imei, entry) {
     const envelope = builder.down('heartbeat', imei, {});
     const buf = encode(envelope);
     socket.write(buf);
-    console.log(`💓 [v2] heartbeat sent imei=${imei}`);
+    console.log(`🔌 [v2] keep-alive ping → imei=${imei}`);
   } catch (err) {
     // فشل الكتابة → الـ socket على الأرجح ميت → احذفها وما تكسر السكدولر
     sessions.delete(imei);
     const msg = err && err.message ? err.message : String(err);
-    console.log(`⚠️ [v2] heartbeat failed imei=${imei} err=${msg}`);
-    try { logger.warn(`[v2] heartbeat failed imei=${imei}: ${msg}`); } catch (_) { /* ignore */ }
+    console.log(`⚠️ [v2] keep-alive ping failed imei=${imei} err=${msg}`);
+    try { logger.warn(`[v2] keep-alive ping failed imei=${imei}: ${msg}`); } catch (_) { /* ignore */ }
   }
 }
 
@@ -77,7 +77,7 @@ function _tick() {
       _sendHeartbeat(imei, entry);
     } catch (err) {
       const msg = err && err.message ? err.message : String(err);
-      console.log(`⚠️ [v2] heartbeat tick error imei=${imei} err=${msg}`);
+      console.log(`⚠️ [v2] keep-alive tick error imei=${imei} err=${msg}`);
       sessions.delete(imei);
     }
   }
@@ -89,7 +89,7 @@ function start() {
   if (_intervalHandle && typeof _intervalHandle.unref === 'function') {
     _intervalHandle.unref();
   }
-  console.log(`💓 [v2] heartbeat scheduler started (every ${HEARTBEAT_INTERVAL_MS / 1000}s)`);
+  console.log(`🔌 [v2] keep-alive ping started (every ${HEARTBEAT_INTERVAL_MS / 1000}s)`);
 }
 
 function stop() {

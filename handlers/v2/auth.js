@@ -62,6 +62,19 @@ async function handleLogin(req, ctx) {
     }
   }, 1500);
 
+  // SOS setup at +5s — يطابق توقيت legacy IWBP12 setTimeout.
+  // مرجع SDK page 36 (type: 'SOSNumber'). لو فشل الإرسال أو السوكت مات
+  // قبل التوقيت، نسجل warning ولا نكسر تدفق LOGIN.
+  setTimeout(() => {
+    try {
+      if (!ctx.socket || ctx.socket.destroyed) return;
+      const { sendSOSNumberConfig } = require('./sos');
+      sendSOSNumberConfig(ctx.socket, imei);
+    } catch (err) {
+      ctx.logger.warn(`[v2-SOS] post-login send failed: ${err.message}`);
+    }
+  }, 5000);
+
   // 3) شغّل دورة القياسات الـ server-driven (Location→HR→BP→Temp→SpO2).
   //    داخلها 10s initial delay، لذا تبدأ بعد ما يستقر الـ login + config flush.
   try {
