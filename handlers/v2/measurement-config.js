@@ -37,39 +37,45 @@ function _writeEnvelope(socket, envelope, label, imei) {
 
 /**
  * deviceMeasuringFrequency — يضبط الفواصل الزمنية لكل قياس.
- * الـ intervals بالدقائق (string) كما هو مطلوب في الـ SDK.
+ *
+ * ⭐ تم تغيير الاستراتيجية: السيرفر هو من يقود القياسات الآن عبر
+ *    measurement-session.js (دورة Location→HR→BP→Temp→SpO2 كل 5 دقائق).
+ *    لذا نُرسل "0" لكل interval حتى الساعة توقف الـ self-paced auto-reporting
+ *    وتُجاوب فقط على أوامر dn* الصريحة من السيرفر.
  */
 function sendMeasurementFrequencyConfig(socket, imei) {
   if (!imei) return false;
 
   const envelope = builder.down('deviceMeasuringFrequency', imei, {
     configs: {
-      upHeartRate: { interval: '30' },
-      upBP:        { interval: '60' },
-      upBO:        { interval: '60' },
-      upStep:      { interval: '15' },
-      upBodyTemperature: { interval: '60', frequency: 5 },
+      upHeartRate:       { interval: '0' },
+      upBP:              { interval: '0' },
+      upBO:              { interval: '0' },
+      upStep:            { interval: '0' },
+      upBodyTemperature: { interval: '0', frequency: 0 },
     },
   });
 
   const ok = _writeEnvelope(socket, envelope, 'deviceMeasuringFrequency', imei);
-  if (ok) console.log(`⚙️  [v2] deviceMeasuringFrequency sent imei=${imei}`);
+  if (ok) console.log(`⚙️  [v2] deviceMeasuringFrequency sent imei=${imei} (all=0 → server-driven)`);
   return ok;
 }
 
 /**
  * locationInterval — يضبط فاصل تقارير GPS بالثواني.
- * 300 = كل 5 دقائق.
+ *
+ * ⭐ تم ضبطه على 0 = إيقاف التقارير الذاتية. السيرفر يطلب الموقع صراحة
+ *    عبر dnLocation داخل دورة measurement-session.
  */
 function sendLocationIntervalConfig(socket, imei) {
   if (!imei) return false;
 
   const envelope = builder.down('locationInterval', imei, {
-    intervalTime: 300,
+    intervalTime: 0,
   });
 
   const ok = _writeEnvelope(socket, envelope, 'locationInterval', imei);
-  if (ok) console.log(`📍 [v2] locationInterval sent imei=${imei} (300s)`);
+  if (ok) console.log(`📍 [v2] locationInterval sent imei=${imei} (0s → server-driven)`);
   return ok;
 }
 
