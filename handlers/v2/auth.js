@@ -38,6 +38,29 @@ async function handleLogin(req, ctx) {
   // رد بـ bindStatus=1 (bound) حتى الجهاز يستمر بالعمل
   const reply = builder.loginReply(req, 1);
   ctx.sendResponse(reply);
+
+  // ─── POST-LOGIN HOOKS (additive — لا يعدّل أي شيء أعلاه) ───────────
+  // 1) سجّل الـ socket في heartbeat scheduler حتى لا يصير idle ويُغلق.
+  // 2) بعد 1.5s ابعث deviceMeasuringFrequency + locationInterval حتى
+  //    الساعة تبدأ تأخذ قياسات تلقائية وترسلها (upHeartRate/upBP/upBO/...).
+  try {
+    const { registerSession } = require('./heartbeat');
+    registerSession(imei, ctx.socket);
+  } catch (err) {
+    ctx.logger.warn(`[v2] heartbeat registerSession failed: ${err.message}`);
+  }
+
+  setTimeout(() => {
+    try {
+      // re-check إن الـ socket لسا حي قبل الإرسال
+      if (!ctx.socket || ctx.socket.destroyed) return;
+      const cfg = require('./measurement-config');
+      cfg.sendMeasurementFrequencyConfig(ctx.socket, imei);
+      cfg.sendLocationIntervalConfig(ctx.socket, imei);
+    } catch (err) {
+      ctx.logger.warn(`[v2] post-login config push failed: ${err.message}`);
+    }
+  }, 1500);
 }
 
 async function handleHeartbeat(req, ctx) {

@@ -50,6 +50,13 @@ function setupV2() {
       logger.error(`[v2] migrations failed: ${err.message}`);
       // لا نرمي الخطأ — السيرفر القديم لازم يستمر بالعمل
     }
+
+    // additive: شغّل heartbeat scheduler مرة وحدة (يستهدف اتصالات v2 فقط)
+    try {
+      require('./handlers/v2/heartbeat').start();
+    } catch (err) {
+      console.error('⚠️  [v2] heartbeat scheduler start failed:', err.message);
+    }
   })();
   return _setupPromise;
 }
@@ -72,6 +79,10 @@ function _cleanupSocket(socket) {
   if (socket.imei && imeiToSocket.get(socket.imei) === socket) {
     imeiToSocket.delete(socket.imei);
   }
+  // additive: notify heartbeat scheduler so we stop pinging a dead socket
+  try {
+    if (socket.imei) require('./handlers/v2/heartbeat').unregisterSession(socket.imei);
+  } catch (_) { /* ignore */ }
 }
 
 /**

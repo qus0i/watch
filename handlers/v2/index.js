@@ -16,6 +16,7 @@ const health = require('./health');
 const location = require('./location');
 const activity = require('./activity');
 const config = require('./config');
+const weather = require('./weather');
 const builder = require('../../protocol/v2/builder');
 
 const HANDLERS = {
@@ -44,6 +45,9 @@ const HANDLERS = {
   // Config / custom
   upDeviceConfig: config.upDeviceConfig,
   upCustom: config.upCustom,
+
+  // Weather (mock dnWeather reply — TODO: real API)
+  upWeather: weather.upWeather,
 };
 
 /**
