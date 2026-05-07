@@ -136,12 +136,89 @@ async function handleUpDirectMeasurement(req, ctx) {
   ctx.sendResponse(builder.reply(req));
 }
 
+/**
+ * ⭐ Cycle-aware measurement handler (v2 session cycle).
+ * يطبّق نفس validations دورة legacy ويستخدم db.upsertHealthData بحيث كل
+ * قياسات الدورة (HR/BP/Temp/SpO2) تنزل بنفس السطر عبر socket.currentHealthCycleId.
+ * يستهلكه: upHeartRate, upBP, upBO, upBodyTemperature.
+ */
+function _validateRanges(fields) {
+  const out = {};
+  if (fields.heartRate !== undefined && fields.heartRate !== null
+      && fields.heartRate > 0 && fields.heartRate < 200) {
+    out.heartRate = fields.heartRate;
+  }
+  if (fields.systolic !== undefined && fields.systolic !== null
+      && fields.systolic > 0 && fields.systolic < 250) {
+    out.systolic = fields.systolic;
+    if (fields.diastolic !== undefined && fields.diastolic !== null) {
+      out.diastolic = fields.diastolic;
+    }
+  }
+  if (fields.spo2 !== undefined && fields.spo2 !== null
+      && fields.spo2 > 0 && fields.spo2 <= 100) {
+    out.spo2 = fields.spo2;
+  }
+  if (fields.temperature !== undefined && fields.temperature !== null
+      && fields.temperature > 30 && fields.temperature < 45) {
+    out.temperature = fields.temperature;
+  }
+  return out;
+}
+
+async function handleCycleMeasurement(req, ctx) {
+  const imei = req.imei || ctx.socket.imei;
+  const data = req.data || {};
+  const measurementType = data.type || req.type;
+  const dataStr = data.data !== undefined ? data.data : data.date;
+
+  if (!imei) {
+    ctx.sendResponse(builder.reply(req));
+    return;
+  }
+
+  const rawFields = parseMeasurement(measurementType, dataStr);
+  const validFields = _validateRanges(rawFields);
+
+  if (Object.keys(validFields).length === 0) {
+    ctx.logger.warn(
+      `⚠️ [v2-SESSION] ${measurementType} skipped imei=${imei} raw=${JSON.stringify(rawFields)}`
+    );
+    ctx.sendResponse(builder.reply(req));
+    return;
+  }
+
+  const cycleId = await db.upsertHealthData(
+    {
+      imei,
+      timestamp: new Date(),
+      ...validFields,
+    },
+    ctx.socket.currentHealthCycleId
+  );
+
+  if (cycleId) {
+    ctx.socket.currentHealthCycleId = cycleId;
+  }
+
+  const summary = Object.entries(validFields)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' ');
+  console.log(
+    `💾 [DB-v2] ${measurementType} imei=${imei} ${summary} → row #${cycleId || '?'}`
+  );
+
+  ctx.sendResponse(builder.reply(req));
+}
+
 module.exports = {
   upHealthData: handleUpHealthData,
   upBatch: handleUpBatch,
-  upHeartRate: handleUpDirectMeasurement,
-  upBP: handleUpDirectMeasurement,
-  upBO: handleUpDirectMeasurement,
-  upBodyTemperature: handleUpDirectMeasurement,
+  // cycle-aware (write to current health cycle row)
+  upHeartRate: handleCycleMeasurement,
+  upBP: handleCycleMeasurement,
+  upBO: handleCycleMeasurement,
+  upBodyTemperature: handleCycleMeasurement,
+  // not part of cycle — legacy direct save
   upBS: handleUpDirectMeasurement,
 };

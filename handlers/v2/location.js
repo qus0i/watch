@@ -25,8 +25,36 @@ async function handleUpLocation(req, ctx) {
   const data = req.data || {};
   const ts = parser.tsToDate(data.timestamp || req.timestamp);
 
-  if (imei) {
-    await db.saveLocationV2(imei, data, ts);
+  if (!imei) {
+    ctx.sendResponse(builder.reply(req));
+    return;
+  }
+
+  // ⭐ Cycle-aware: أول upLocation للدورة → INSERT جديد عبر saveLocationV2
+  // (يحفظ الـ payload الكامل: gps, baseStation, wifi, mcc/mnc/lac/ci, gsm, sat).
+  // upLocation اللاحقة بنفس الدورة → UPDATE الإحداثيات فقط على نفس الـ row.
+  const gps = data.gps || null;
+  const lat = gps && gps.lat !== undefined ? parseFloat(gps.lat) : null;
+  const lon = gps && gps.lon !== undefined ? parseFloat(gps.lon) : null;
+
+  if (!ctx.socket.currentLocationCycleId) {
+    // أول موقع بالدورة — INSERT (saveLocationV2 يرجع الـ id لجدول locations)
+    const newId = await db.saveLocationV2(imei, data, ts);
+    if (newId) {
+      ctx.socket.currentLocationCycleId = newId;
+      console.log(`📍 [v2-SESSION] new location row #${newId} imei=${imei}`);
+    }
+  } else if (Number.isFinite(lat) && Number.isFinite(lon)) {
+    // موقع لاحق بنفس الدورة — UPDATE الإحداثيات فقط
+    await db.updateLocationById(ctx.socket.currentLocationCycleId, lat, lon);
+    console.log(
+      `📍 [v2-SESSION] updated location row #${ctx.socket.currentLocationCycleId} imei=${imei} ` +
+      `lat=${lat.toFixed(6)} lon=${lon.toFixed(6)}`
+    );
+  } else {
+    console.log(
+      `📍 [v2-SESSION] location row #${ctx.socket.currentLocationCycleId} kept (no GPS this time)`
+    );
   }
 
   ctx.sendResponse(builder.reply(req));

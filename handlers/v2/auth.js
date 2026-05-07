@@ -61,6 +61,15 @@ async function handleLogin(req, ctx) {
       ctx.logger.warn(`[v2] post-login config push failed: ${err.message}`);
     }
   }, 1500);
+
+  // 3) شغّل دورة القياسات الـ server-driven (Location→HR→BP→Temp→SpO2).
+  //    داخلها 10s initial delay، لذا تبدأ بعد ما يستقر الـ login + config flush.
+  try {
+    const { startMeasurementSession } = require('./measurement-session');
+    startMeasurementSession(ctx.socket, imei);
+  } catch (err) {
+    ctx.logger.warn(`[v2] startMeasurementSession failed: ${err.message}`);
+  }
 }
 
 async function handleHeartbeat(req, ctx) {
