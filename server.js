@@ -178,7 +178,14 @@ const server = net.createServer((socket) => {
     const hex = firstByte.toString(16).padStart(2, '0').toUpperCase();
     logger.warn(`بروتوكول غير معروف من ${socket.remoteAddress}:${socket.remotePort} — أول بايت 0x${hex}`);
     console.log(`⚠️  بروتوكول غير معروف من ${socket.remoteAddress} — أول بايت 0x${hex}`);
-    try { socket.destroy(); } catch (_) { /* ignore */ }
+    try {
+      const { handleDiagnosticConnection } = require('./handlers/diagnostic/probe');
+      socket.unshift(firstChunk);
+      handleDiagnosticConnection(socket, firstByte);
+    } catch (err) {
+      logger.error(`فشل تشغيل الـ diagnostic probe: ${err.message}`);
+      try { socket.destroy(); } catch (_) { /* ignore */ }
+    }
   });
 
   // Safety: لو الجهاز ما رسل أي data خلال 30 ثانية، اقفل الاتصال
