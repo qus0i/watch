@@ -34,8 +34,68 @@ async function handleUpLocation(req, ctx) {
   // (يحفظ الـ payload الكامل: gps, baseStation, wifi, mcc/mnc/lac/ci, gsm, sat).
   // upLocation اللاحقة بنفس الدورة → UPDATE الإحداثيات فقط على نفس الـ row.
   const gps = data.gps || null;
-  const lat = gps && gps.lat !== undefined ? parseFloat(gps.lat) : null;
-  const lon = gps && gps.lon !== undefined ? parseFloat(gps.lon) : null;
+  let lat = gps && gps.lat !== undefined ? parseFloat(gps.lat) : null;
+  let lon = gps && gps.lon !== undefined ? parseFloat(gps.lon) : null;
+
+  // ─── LBS/WiFi fallback when GPS is absent ──────────────────────────
+  // Mirrors legacy `handleMultipleBases` in handlers/messageHandlers.js.
+  // HW20 PRO indoors sends valid baseStation + wifi arrays but no gps —
+  // resolve them through the same LocationService the legacy stack uses.
+  let resolvedFromLBS = false;
+  const gpsValid = Number.isFinite(lat) && Number.isFinite(lon)
+                   && !(lat === 0 && lon === 0);
+
+  if (!gpsValid) {
+    try {
+      const baseStation = Array.isArray(data.baseStation) && data.baseStation.length > 0
+        ? data.baseStation[0]
+        : null;
+      const wifiList = Array.isArray(data.wifi) ? data.wifi : [];
+
+      // v2 baseStation field is `ci` (per protocol/v2 docs); legacy uses `cellId`.
+      // Accept either to be defensive.
+      const cellId = baseStation
+        ? parseInt(baseStation.ci ?? baseStation.cellId, 10)
+        : NaN;
+      const mcc = baseStation ? parseInt(baseStation.mcc, 10) : NaN;
+      const mnc = baseStation ? parseInt(baseStation.mnc, 10) : NaN;
+      const lac = baseStation ? parseInt(baseStation.lac, 10) : NaN;
+
+      // wifi shape from v2 protocol: { ssid, signal, mac } — already matches
+      // what LocationService expects. Filter to entries that actually have a MAC.
+      const wifiData = wifiList.filter((w) => w && w.mac);
+
+      if (Number.isFinite(mcc) && Number.isFinite(lac) && Number.isFinite(cellId)) {
+        const LocationService = require('../../services/locationService');
+        const resolved = await LocationService.resolveLocation(
+          mcc, mnc, lac, cellId, wifiData
+        );
+        if (resolved
+            && Number.isFinite(resolved.latitude)
+            && Number.isFinite(resolved.longitude)) {
+          lat = resolved.latitude;
+          lon = resolved.longitude;
+          resolvedFromLBS = true;
+          console.log(
+            `📡 [v2-LBS] resolved imei=${imei} via ${resolved.source} → ` +
+            `${lat.toFixed(6)}, ${lon.toFixed(6)} (acc=${resolved.accuracy || '?'}m)`
+          );
+        } else {
+          console.log(
+            `⚠️ [v2-LBS] no resolution imei=${imei} ` +
+            `mcc=${mcc} mnc=${mnc} lac=${lac} cid=${cellId} wifi=${wifiData.length}`
+          );
+        }
+      } else {
+        console.log(
+          `⚠️ [v2-LBS] insufficient LBS data imei=${imei} ` +
+          `(mcc/lac/cid not all numeric — wifi=${wifiData.length})`
+        );
+      }
+    } catch (err) {
+      console.log(`⚠️ [v2-LBS] resolution error imei=${imei}: ${err.message}`);
+    }
+  }
 
   if (!ctx.socket.currentLocationCycleId) {
     // أول موقع بالدورة — INSERT (saveLocationV2 يرجع الـ id لجدول locations)
@@ -43,6 +103,19 @@ async function handleUpLocation(req, ctx) {
     if (newId) {
       ctx.socket.currentLocationCycleId = newId;
       console.log(`📍 [v2-SESSION] new location row #${newId} imei=${imei}`);
+
+      // Backfill resolved coords onto the row we just inserted.
+      if (resolvedFromLBS) {
+        try {
+          await db.updateLocationById(newId, lat, lon);
+          console.log(
+            `📡 [v2-SESSION] row #${newId} updated with LBS-resolved coords ` +
+            `lat=${lat.toFixed(6)} lon=${lon.toFixed(6)}`
+          );
+        } catch (err) {
+          console.log(`⚠️ [v2-SESSION] LBS backfill failed row #${newId}: ${err.message}`);
+        }
+      }
     }
   } else if (Number.isFinite(lat) && Number.isFinite(lon)) {
     // موقع لاحق بنفس الدورة — UPDATE الإحداثيات فقط
