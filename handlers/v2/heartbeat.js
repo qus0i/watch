@@ -34,9 +34,21 @@ function registerSession(imei, socket) {
   sessions.set(key, { socket, lastSeenAt: Date.now() });
 }
 
-function unregisterSession(imei) {
+// socket arg is optional. لما يُمرَّر، نحذف فقط لو الـ entry الحالي يخص نفس
+// الـ socket — حتى close handler لسوكت قديم ما يطيح entry الجديد بعد re-LOGIN.
+function unregisterSession(imei, socket) {
   if (!imei) return;
-  sessions.delete(String(imei));
+  const key = String(imei);
+  if (socket) {
+    const entry = sessions.get(key);
+    if (!entry || entry.socket !== socket) return;
+  }
+  sessions.delete(key);
+}
+
+function getSession(imei) {
+  if (!imei) return null;
+  return sessions.get(String(imei)) || null;
 }
 
 function getSessionCount() {
@@ -102,6 +114,7 @@ function stop() {
 module.exports = {
   registerSession,
   unregisterSession,
+  getSession,
   start,
   stop,
   getSessionCount,

@@ -197,6 +197,13 @@ function startMeasurementSession(socket, imei) {
   socket.once('error', onError);
 }
 
+// public stop helper — يستخدمه LOGIN handler عشان يقطع دورة سوكت قديم
+// قبل ما يبدأ دورة على سوكت جديد لنفس الـ IMEI.
+function stopMeasurementSession(socket, reason) {
+  _stopCycle(socket, socket && socket.imei, reason || 'manual-stop');
+}
+
 module.exports = {
   startMeasurementSession,
+  stopMeasurementSession,
 };

@@ -79,9 +79,11 @@ function _cleanupSocket(socket) {
   if (socket.imei && imeiToSocket.get(socket.imei) === socket) {
     imeiToSocket.delete(socket.imei);
   }
-  // additive: notify heartbeat scheduler so we stop pinging a dead socket
+  // additive: notify heartbeat scheduler so we stop pinging a dead socket.
+  // نمرّر socket عشان unregisterSession ما يطيح entry سوكت جديد إذا
+  // re-LOGIN عمل overwrite قبل ما close handler للقديم يطلق.
   try {
-    if (socket.imei) require('./handlers/v2/heartbeat').unregisterSession(socket.imei);
+    if (socket.imei) require('./handlers/v2/heartbeat').unregisterSession(socket.imei, socket);
   } catch (_) { /* ignore */ }
 }
 
