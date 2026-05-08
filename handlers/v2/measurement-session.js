@@ -33,6 +33,17 @@ const MEASUREMENTS_ENABLED = {
   bo: true,
 };
 
+// Canonical "is a cycle running for this IMEI?" registry. Populated and
+// cleared atomically with socket._v2SessionInterval, so it stays in sync
+// with the actual interval lifetime — unlike heartbeat.sessions, which can
+// be silently emptied by the keep-alive tick before close fires.
+const sessionsByImei = new Map(); // imei (string) → socket
+
+function getSessionSocketByImei(imei) {
+  if (!imei) return null;
+  return sessionsByImei.get(String(imei)) || null;
+}
+
 function _cfg() {
   const hm = (config && config.healthMonitoring) || {};
   const cycleMs = hm.intervalMinutes
@@ -87,6 +98,12 @@ function _stopCycle(socket, imei, reason) {
   if (socket && socket._v2SessionStarted) {
     socket._v2SessionStarted = false;
     console.log(`⚠️ [v2-SESSION] Stopped imei=${imei || '-'} reason=${reason}`);
+  }
+  // socket-aware delete: لو entry تبدّل لسوكت جديد قبل ما _stopCycle للقديم
+  // يطلق، ما نمسح entry الجديد بالغلط.
+  if (imei) {
+    const cur = sessionsByImei.get(String(imei));
+    if (cur === socket) sessionsByImei.delete(String(imei));
   }
 }
 
@@ -189,6 +206,7 @@ function startMeasurementSession(socket, imei) {
   // دورات متكررة
   const intervalId = setInterval(runCycle, cycleMs);
   socket._v2SessionInterval = intervalId;
+  sessionsByImei.set(String(imei), socket);
 
   // تنظيف على close (ما يحتاج تعديل في server-v2.js)
   const onClose = () => _stopCycle(socket, imei, 'socket-close');
@@ -206,4 +224,5 @@ function stopMeasurementSession(socket, reason) {
 module.exports = {
   startMeasurementSession,
   stopMeasurementSession,
+  getSessionSocketByImei,
 };

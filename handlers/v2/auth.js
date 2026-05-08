@@ -19,26 +19,17 @@ async function handleLogin(req, ctx) {
   }
 
   // ─── Pre-empt prior socket for same IMEI (reconnect leak fix) ──────
-  // لو الجهاز فقد الاتصال وعاد على socket جديد قبل ما النواة تكتشف موت
-  // الـ socket القديم، الـ heartbeat sessions Map ولسة فيها الـ socket
-  // القديم مع interval قياسات نشط. لازم نوقفه قبل ما نسجّل الجديد.
+  // canonical source: measurement-session's imei→socket map.
+  // heartbeat.sessions can be silently emptied by the keep-alive tick
+  // before close fires, so it is NOT reliable for this lookup.
   try {
-    const heartbeat = require('./heartbeat');
-    const prior = heartbeat.getSession(imei);
-    if (prior && prior.socket && prior.socket !== ctx.socket) {
-      const oldSock = prior.socket;
-      try {
-        const { stopMeasurementSession } = require('./measurement-session');
-        stopMeasurementSession(oldSock, 'replaced-by-relogin');
-      } catch (_) { /* ignore */ }
-      // احذف heartbeat entry للسوكت القديم (socket-aware حتى ما نمسح
-      // entry الجديد لو registerSession نفّذ قبل هذا الكود في race).
-      try { heartbeat.unregisterSession(imei, oldSock); } catch (_) { /* ignore */ }
-      // اقفل السوكت القديم لو لسة حي — يضمن إن أي in-flight runCycle
-      // يتوقف عند _isAlive check ويُحرّر الـ TCP fd.
-      try {
-        if (oldSock && !oldSock.destroyed) oldSock.destroy();
-      } catch (_) { /* ignore */ }
+    const { getSessionSocketByImei, stopMeasurementSession } =
+      require('./measurement-session');
+    const oldSock = getSessionSocketByImei(imei);
+    if (oldSock && oldSock !== ctx.socket) {
+      try { stopMeasurementSession(oldSock, 'replaced-by-relogin'); } catch (_) {}
+      try { require('./heartbeat').unregisterSession(imei, oldSock); } catch (_) {}
+      try { if (!oldSock.destroyed) oldSock.destroy(); } catch (_) {}
       ctx.logger.info(`♻️ [v2] LOGIN preempted prior socket imei=${imei}`);
     }
   } catch (err) {
