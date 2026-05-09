@@ -119,7 +119,60 @@ async function handleHeartbeat(req, ctx) {
   ctx.sendResponse(builder.heartbeatReply(req));
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  Galaxy Watch Ultra — additive handlers (FCAF v2 "flat" dialect)
+//  Galaxy frames carry top-level fw/model/value/ts and no inner data
+//  envelope. Routed by distinct outer types ('upLogin' / 'upHeartbeat')
+//  so they never collide with the Chinese 'login' / 'heartbeat' path.
+// ═══════════════════════════════════════════════════════════════
+
+async function handleGalaxyUpLogin(req, ctx) {
+  const imei = req.imei;
+  if (!imei) {
+    ctx.logger.warn('v2-galaxy upLogin: no imei');
+    return;
+  }
+
+  const r = req.raw || {};
+  const deviceModel = r.model || null;
+  const fw = r.fw || null;
+
+  try {
+    await db.getOrCreateDeviceV2(imei, deviceModel, {
+      firmwareV: fw,
+      bindStatus: 1,
+      watchType: 'galaxy',
+    });
+    // mark last_heartbeat=NOW() — Galaxy login implies the device is alive.
+    await db.updateDeviceHeartbeatV2(imei);
+  } catch (err) {
+    ctx.logger.error(`v2-galaxy upLogin DB error: ${err.message}`);
+  }
+
+  ctx.socket.imei = imei;
+  ctx.socket.deviceModel = deviceModel;
+  ctx.logger.info(
+    `🎉 [v2-galaxy] login imei=${imei} model=${deviceModel || '-'} fw=${fw || '-'}`
+  );
+  ctx.sendResponse(builder.reply(req));
+}
+
+async function handleGalaxyUpHeartbeat(req, ctx) {
+  const imei = req.imei || ctx.socket.imei;
+  if (imei) {
+    try {
+      await db.updateDeviceHeartbeatV2(imei);
+    } catch (err) {
+      ctx.logger.error(`v2-galaxy upHeartbeat DB error: ${err.message}`);
+    }
+  }
+  ctx.logger.debug(`💓 [v2-galaxy] heartbeat imei=${imei || '-'}`);
+  ctx.sendResponse(builder.reply(req));
+}
+
 module.exports = {
   login: handleLogin,
   heartbeat: handleHeartbeat,
+  galaxyUpLogin: handleGalaxyUpLogin,
+  galaxyUpHeartbeat: handleGalaxyUpHeartbeat,
 };

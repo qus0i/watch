@@ -20,8 +20,84 @@ const db = require('../../database/db');
 const parser = require('../../protocol/v2/parser');
 const builder = require('../../protocol/v2/builder');
 
+/**
+ * Detect Galaxy "flat" dialect upLocation frames. Parser preserves the raw
+ * JSON on req.raw; Galaxy puts `gps` at the top level instead of nesting.
+ */
+function _isGalaxyLocation(req) {
+  const r = req.raw || {};
+  const dataMissing = !r.data
+    || (typeof r.data === 'object' && Object.keys(r.data).length === 0);
+  return dataMissing && r.gps !== undefined;
+}
+
+/**
+ * Galaxy upLocation fast-path — additive. Reuses the same INSERT/UPDATE
+ * cycle-id bookkeeping the Chinese path uses, so a Galaxy connection
+ * produces one location row that subsequent fixes UPDATE in place.
+ */
+async function handleGalaxyLocation(req, ctx, imei) {
+  const r = req.raw || {};
+
+  if (!imei) {
+    ctx.sendResponse(builder.reply(req));
+    return;
+  }
+
+  const gps = (r.gps && typeof r.gps === 'object') ? r.gps : {};
+  const lat = gps.lat !== undefined && gps.lat !== null
+    ? parseFloat(gps.lat) : null;
+  const lon = gps.lon !== undefined && gps.lon !== null
+    ? parseFloat(gps.lon) : null;
+  const gpsValid = Number.isFinite(lat) && Number.isFinite(lon)
+    && !(lat === 0 && lon === 0);
+
+  // Galaxy ts is epoch SECONDS — Chinese path uses ms, untouched.
+  const ts = Number.isFinite(r.ts) && r.ts > 0
+    ? new Date(r.ts * 1000)
+    : new Date();
+
+  // Shape the payload the way saveLocationV2 expects. Galaxy never sends
+  // baseStation/wifi, so LBS resolution is N/A — passing empty arrays
+  // produces the same "no-gps" row the legacy fallback writes today.
+  const payload = {
+    gps: gpsValid ? { lat, lon } : null,
+    baseStation: [],
+    wifi: [],
+  };
+
+  if (!ctx.socket.currentLocationCycleId) {
+    const newId = await db.saveLocationV2(imei, payload, ts);
+    if (newId) {
+      ctx.socket.currentLocationCycleId = newId;
+      console.log(
+        `📍 [v2-galaxy] new location row #${newId} imei=${imei} ` +
+        `gps=${gpsValid ? 'populated' : 'empty'}`
+      );
+    }
+  } else if (gpsValid) {
+    await db.updateLocationById(ctx.socket.currentLocationCycleId, lat, lon);
+    console.log(
+      `📍 [v2-galaxy] updated row #${ctx.socket.currentLocationCycleId} ` +
+      `imei=${imei} lat=${lat.toFixed(6)} lon=${lon.toFixed(6)}`
+    );
+  } else {
+    console.log(
+      `📍 [v2-galaxy] row #${ctx.socket.currentLocationCycleId} kept (no GPS this time)`
+    );
+  }
+
+  ctx.sendResponse(builder.reply(req));
+}
+
 async function handleUpLocation(req, ctx) {
   const imei = req.imei || ctx.socket.imei;
+
+  // ── Galaxy fast-path (additive) ─────────────────────────────────
+  if (_isGalaxyLocation(req)) {
+    return handleGalaxyLocation(req, ctx, imei);
+  }
+  // ── existing Chinese path below — UNCHANGED ─────────────────────
   const data = req.data || {};
   const ts = parser.tsToDate(data.timestamp || req.timestamp);
 

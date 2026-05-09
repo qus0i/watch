@@ -9,7 +9,8 @@
     "init-db": "node database/init-db.js",
     "railway:start": "node database/init-db.js && node server.js",
     "migrate": "node database/migrate.js",
-    "test:v2-client": "node tests/v2-client.js"
+    "test:v2-client": "node tests/v2-client.js",
+    "test:v2-galaxy": "node tests/v2-galaxy-client.js"
   },
   "keywords": ["gps", "watch", "tcp", "health-monitoring"],
   "author": "Qusai Kanaan",

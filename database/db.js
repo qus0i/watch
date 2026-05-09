@@ -471,11 +471,18 @@ async function getOrCreateDeviceV2(imei, deviceModel = null, extras = {}) {
       const values = [];
       let i = 1;
 
-      // إذا الجهاز جديد (مفيش watch_type أو 'iw_legacy' افتراضي وما لُقي بقاعدة قديمة)،
-      // نوسمه health_v2 فقط لو كان NULL أو ما تعيّن صراحة.
-      if (!currentType || currentType === 'iw_legacy') {
-        // خلّي iw_legacy على حالها لو كانت الساعة قديمة فعلاً.
-        // لكن لو سجّلت دخول عبر v2 protocol فالغالب هي v2 — نحدّثها.
+      // explicit watchType override (e.g. 'galaxy' for Samsung clients).
+      // when provided we trust the caller — covers iw_legacy → galaxy and
+      // health_v2 → galaxy upgrade paths without losing the existing fleet.
+      const explicitType = extras.watchType || null;
+
+      if (explicitType) {
+        if (currentType !== explicitType) {
+          sets.push(`watch_type = $${i++}`);
+          values.push(explicitType);
+        }
+      } else if (!currentType || currentType === 'iw_legacy') {
+        // legacy upgrade path — Chinese v2 login. Unchanged behavior.
         sets.push(`watch_type = $${i++}`);
         values.push('health_v2');
       }
@@ -508,10 +515,11 @@ async function getOrCreateDeviceV2(imei, deviceModel = null, extras = {}) {
       return id;
     }
 
-    // إنشاء جهاز جديد بـ watch_type='health_v2'
+    // إنشاء جهاز جديد — watch_type defaults to 'health_v2' (Chinese fleet),
+    // overridable via extras.watchType (e.g. 'galaxy' for Samsung clients).
     const insertCols = ['imei', 'last_connection', 'watch_type'];
     const insertVals = ['$1', 'NOW()', '$2'];
-    const params = [imei, 'health_v2'];
+    const params = [imei, extras.watchType || 'health_v2'];
     let p = 3;
 
     if (deviceModel) {

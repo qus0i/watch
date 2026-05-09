@@ -166,8 +166,99 @@ function _validateRanges(fields) {
   return out;
 }
 
+/**
+ * Detect Galaxy "flat" dialect frames. Parser preserves the original JSON
+ * on req.raw (req.data is normalized away from the raw shape), so we
+ * detect there. Galaxy frames carry top-level `value` + `ts` and no inner
+ * `data` object; Chinese frames always nest under `data`.
+ */
+function _isGalaxyMeasurement(req) {
+  const r = req.raw || {};
+  const dataMissing = !r.data
+    || (typeof r.data === 'object' && Object.keys(r.data).length === 0);
+  return dataMissing && r.value !== undefined;
+}
+
+/**
+ * Galaxy measurement fast-path — additive, never invoked for Chinese frames.
+ * Reuses _validateRanges and db.upsertHealthData exactly like the Chinese path.
+ */
+async function handleGalaxyMeasurement(req, ctx, imei) {
+  const r = req.raw || {};
+  const measurementType = req.type;
+
+  if (!imei) {
+    ctx.sendResponse(builder.reply(req));
+    return;
+  }
+
+  const rawFields = {};
+  switch (measurementType) {
+    case 'upHeartRate':
+      rawFields.heartRate = r.value;
+      break;
+    case 'upBodyTemperature':
+      rawFields.temperature = r.value;
+      break;
+    case 'upBO':
+      // defensive — Stream 2 may re-enable later. Galaxy CONTRACTS.md has it
+      // documented but disabled today.
+      rawFields.spo2 = Number.isFinite(r.value) ? Math.round(r.value) : null;
+      break;
+    default:
+      ctx.logger.debug(
+        `[v2-galaxy] unsupported measurement type=${measurementType} — ack only`
+      );
+      ctx.sendResponse(builder.reply(req));
+      return;
+  }
+
+  const validFields = _validateRanges(rawFields);
+
+  if (Object.keys(validFields).length === 0) {
+    console.log(
+      `⚠️ [v2-galaxy] ${measurementType} skipped imei=${imei} value=${r.value}`
+    );
+    ctx.sendResponse(builder.reply(req));
+    return;
+  }
+
+  // Galaxy ts is epoch SECONDS (not ms). Chinese path stays on ms — untouched.
+  const ts = Number.isFinite(r.ts) && r.ts > 0
+    ? new Date(r.ts * 1000)
+    : new Date();
+
+  const cycleId = await db.upsertHealthData(
+    {
+      imei,
+      timestamp: ts,
+      ...validFields,
+    },
+    ctx.socket.currentHealthCycleId
+  );
+
+  if (cycleId) {
+    ctx.socket.currentHealthCycleId = cycleId;
+  }
+
+  const summary = Object.entries(validFields)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' ');
+  console.log(
+    `💾 [DB-v2-galaxy] ${measurementType} imei=${imei} ${summary} → row #${cycleId || '?'}`
+  );
+
+  ctx.sendResponse(builder.reply(req));
+}
+
 async function handleCycleMeasurement(req, ctx) {
   const imei = req.imei || ctx.socket.imei;
+
+  // ── Galaxy fast-path (additive) ─────────────────────────────────
+  if (_isGalaxyMeasurement(req)) {
+    return handleGalaxyMeasurement(req, ctx, imei);
+  }
+  // ── existing Chinese path below — UNCHANGED ─────────────────────
   const data = req.data || {};
   const measurementType = data.type || req.type;
   const dataStr = data.data !== undefined ? data.data : data.date;

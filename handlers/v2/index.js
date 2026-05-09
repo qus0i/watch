@@ -20,9 +20,14 @@ const weather = require('./weather');
 const builder = require('../../protocol/v2/builder');
 
 const HANDLERS = {
-  // Auth
+  // Auth (Chinese fleet)
   login: auth.login,
   heartbeat: auth.heartbeat,
+
+  // Auth (Galaxy Watch Ultra — FCAF v2 flat dialect; distinct outer types
+  // so the Chinese fleet is unaffected)
+  upLogin: auth.galaxyUpLogin,
+  upHeartbeat: auth.galaxyUpHeartbeat,
 
   // Health
   upHealthData: health.upHealthData,
