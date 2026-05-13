@@ -67,12 +67,18 @@ async function handleGalaxyLocation(req, ctx, imei) {
   };
 
   if (!ctx.socket.currentLocationCycleId) {
+    if (!gpsValid) {
+      console.log(
+        `📍 [v2-galaxy] no GPS yet — deferring initial insert for imei=${imei}`
+      );
+      ctx.sendResponse(builder.reply(req));
+      return;
+    }
     const newId = await db.saveLocationV2(imei, payload, ts);
     if (newId) {
       ctx.socket.currentLocationCycleId = newId;
       console.log(
-        `📍 [v2-galaxy] new location row #${newId} imei=${imei} ` +
-        `gps=${gpsValid ? 'populated' : 'empty'}`
+        `📍 [v2-galaxy] new location row #${newId} imei=${imei} gps=populated`
       );
     }
   } else if (gpsValid) {
