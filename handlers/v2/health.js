@@ -196,6 +196,16 @@ async function handleGalaxyMeasurement(req, ctx, imei) {
   switch (measurementType) {
     case 'upHeartRate':
       rawFields.heartRate = r.value;
+      if (process.env.DEMO_VITALS_ENABLED === 'true') {
+        const { generateDemoVitals } = require('./demo-vitals');
+        Object.assign(rawFields, generateDemoVitals(imei));
+        console.log(
+          `🎭 [v2-galaxy-demo] HR=${r.value} → ` +
+          `spo2=${rawFields.spo2} ` +
+          `bp=${rawFields.systolic}/${rawFields.diastolic} ` +
+          `temp=${rawFields.temperature}`
+        );
+      }
       break;
     case 'upBodyTemperature':
       rawFields.temperature = r.value;
