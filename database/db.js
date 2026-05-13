@@ -32,6 +32,32 @@ async function testConnection() {
   }
 }
 
+// One-shot identity probe — same pool the handlers use.
+async function logDbIdentity() {
+  const client = await pool.connect();
+  try {
+    const r = await client.query(
+      `SELECT current_database() AS db,
+              current_schema()   AS schema,
+              inet_server_addr() AS server_addr,
+              inet_server_port() AS server_port,
+              current_user       AS usr,
+              version()          AS version`
+    );
+    const row = r.rows[0];
+    console.log(
+      `🔬 [DB-IDENTITY] db=${row.db} schema=${row.schema} ` +
+      `server=${row.server_addr || 'unix-socket'}:${row.server_port || '?'} ` +
+      `user=${row.usr}`
+    );
+    console.log(`🔬 [DB-IDENTITY] version=${row.version}`);
+  } catch (err) {
+    console.error('🔬 [DB-IDENTITY] probe failed:', err.message);
+  } finally {
+    client.release();
+  }
+}
+
 /**
  * ⭐ تهيئة قاعدة البيانات - إنشاء الجداول إذا لم تكن موجودة
  */
@@ -813,6 +839,7 @@ module.exports = {
   pool,
   testConnection,
   initializeDatabase,
+  logDbIdentity,
   getOrCreateDevice,
   saveLocation,
   saveHealthData,

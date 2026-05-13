@@ -267,7 +267,9 @@ async function startServer() {
       console.error('❌ Database connection failed');
       process.exit(1);
     }
-    
+
+    await db.logDbIdentity();
+
     // ⭐ تهيئة قاعدة البيانات (إنشاء الجداول إذا لم تكن موجودة)
     console.log('🔵 Initializing database schema...');
     await db.initializeDatabase();
